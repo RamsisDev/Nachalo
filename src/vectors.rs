@@ -5,7 +5,7 @@
 //!
 //! `NACHALO_WRITE_VECTORS=1 cargo test vectors` rewrites the files; otherwise they are checked.
 
-use ml_kem::{Decapsulate, DecapsulationKey768};
+use libcrux_ml_kem::mlkem768;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha512};
 use x25519_dalek::StaticSecret;
@@ -69,7 +69,7 @@ fn generate(invitation: &Invitation, inputs: Value) -> Value {
     let (ya, xa, dk) = (
         cpace::scalar(ir.cpace),
         StaticSecret::from(ir.x25519),
-        DecapsulationKey768::from_seed(ir.ml_kem.into()),
+        mlkem768::generate_key_pair(ir.ml_kem).into_parts().0,
     );
 
     let (mut a, msg1) = Initiator::start_with(invitation, PAYLOAD_A, NOW, ir).unwrap();
@@ -96,7 +96,7 @@ fn generate(invitation: &Invitation, inputs: Value) -> Value {
     );
     let isk = cpace::isk(&ya, &yb, sid, &transcript_ir).unwrap();
     let ss_x = xa.diffie_hellman(&public(&msg2[XB_AT..CT_AT]));
-    let ss_kem = dk.decapsulate(msg2[CT_AT..SEALED_B_AT].try_into().unwrap());
+    let ss_kem = mlkem768::decapsulate(&dk, &msg2[CT_AT..SEALED_B_AT].try_into().unwrap());
     let ikm: [u8; IKM_LEN] = [&isk[..], &ss_x.as_bytes()[..], &ss_kem[..]]
         .concat()
         .try_into()

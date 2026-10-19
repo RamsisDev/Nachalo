@@ -28,7 +28,7 @@
 //! how long a step may stay pending. The messages are the same in every mode.
 
 use curve25519_dalek::scalar::Scalar;
-use ml_kem::{Decapsulate, DecapsulationKey768, EncapsulationKey768, KeyExport};
+use libcrux_ml_kem::mlkem768::{self, MlKem768Ciphertext, MlKem768PrivateKey, MlKem768PublicKey};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
@@ -313,7 +313,7 @@ type Ikm = Zeroizing<[u8; IKM_LEN]>;
 pub struct Initiator {
     y: Zeroizing<Scalar>,
     x: StaticSecret,
-    dk: DecapsulationKey768,
+    dk: MlKem768PrivateKey,
     /// Committed to in msg1, revealed in msg3.
     nonce: Zeroizing<[u8; NONCE_LEN]>,
     payload: Zeroizing<Vec<u8>>,
@@ -321,6 +321,13 @@ pub struct Initiator {
     deadline: u64,
     answers: u8,
     finished: bool,
+}
+
+/// libcrux does not zeroize its keys on drop.
+impl Drop for Initiator {
+    fn drop(&mut self) {
+        self.dk[..MlKem768PrivateKey::len()].zeroize();
+    }
 }
 
 impl Initiator {
@@ -346,14 +353,14 @@ impl Initiator {
         let g = cpace::generator(&invitation.prs, &invitation.channel, &random.sid);
         let y = Zeroizing::new(cpace::scalar(random.cpace));
         let x = StaticSecret::from(random.x25519);
-        let dk = DecapsulationKey768::from_seed(random.ml_kem.into());
+        let (dk, ek) = mlkem768::generate_key_pair(random.ml_kem).into_parts();
 
         let mut msg1 = Vec::with_capacity(MSG1_LEN);
         msg1.extend_from_slice(&random.sid);
         msg1.extend_from_slice(&cpace::share(&y, &g));
         msg1.extend_from_slice(PublicKey::from(&x).as_bytes());
         msg1.extend_from_slice(&commitment(&random.nonce, payload));
-        msg1.extend_from_slice(&dk.encapsulation_key().to_bytes());
+        msg1.extend_from_slice(ek.as_slice());
 
         let initiator = Initiator {
             y,
@@ -396,11 +403,9 @@ impl Initiator {
         let (prefix, sealed_b) = msg2.split_at(SEALED_B_AT);
         let yb = prefix[..XB_AT].try_into().expect("fixed layout");
         let ss_x = contributory(self.x.diffie_hellman(&public(&prefix[XB_AT..CT_AT])))?;
-        let ss_kem = Zeroizing::new(
-            self.dk
-                .decapsulate(prefix[CT_AT..].try_into().expect("fixed layout")),
-        );
-        let ikm = ikm(&self.y, yb, &self.msg1, prefix, &ss_x, &ss_kem)?;
+        let ct: MlKem768Ciphertext = prefix[CT_AT..].try_into().expect("fixed layout");
+        let ss_kem = Zeroizing::new(mlkem768::decapsulate(&self.dk, &ct));
+        let ikm = ikm(&self.y, yb, &self.msg1, prefix, &ss_x, &ss_kem[..])?;
 
         let transcript = Transcript::new(&self.msg1);
         let key_b = key(&transcript.with(prefix), &ikm, LABEL_SEAL_B);
@@ -457,21 +462,23 @@ impl Responder {
             return Err(Error::PayloadTooLarge);
         }
         let msg1: &[u8; MSG1_LEN] = msg1.try_into().map_err(|_| Error::Rejected)?;
-        let ek = EncapsulationKey768::new(msg1[EK_AT..].try_into().expect("fixed layout"))
-            .map_err(|_| Error::Rejected)?;
+        let ek: MlKem768PublicKey = msg1[EK_AT..].try_into().expect("fixed layout");
+        if !mlkem768::validate_public_key(&ek) {
+            return Err(Error::Rejected);
+        }
         let g = cpace::generator(&invitation.prs, &invitation.channel, &msg1[..YA_AT]);
         let y = Zeroizing::new(cpace::scalar(random.cpace));
         let x = StaticSecret::from(random.x25519);
         let ss_x = contributory(x.diffie_hellman(&public(&msg1[XA_AT..COMMIT_AT])))?;
-        let (ct, ss_kem) = ek.encapsulate_deterministic(&random.ml_kem.into());
+        let (ct, ss_kem) = mlkem768::encapsulate(&ek, random.ml_kem);
         let ss_kem = Zeroizing::new(ss_kem);
 
         let mut msg2 = Vec::with_capacity(msg2_len(payload.len()));
         msg2.extend_from_slice(&cpace::share(&y, &g));
         msg2.extend_from_slice(PublicKey::from(&x).as_bytes());
-        msg2.extend_from_slice(&ct);
+        msg2.extend_from_slice(ct.as_slice());
         let ya = msg1[YA_AT..XA_AT].try_into().expect("fixed layout");
-        let ikm = ikm(&y, ya, msg1, &msg2, &ss_x, &ss_kem)?;
+        let ikm = ikm(&y, ya, msg1, &msg2, &ss_x, &ss_kem[..])?;
 
         let transcript = Transcript::new(msg1);
         let key_b = key(&transcript.with(&msg2), &ikm, LABEL_SEAL_B);

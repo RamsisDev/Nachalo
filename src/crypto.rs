@@ -1,4 +1,18 @@
-//! Thin wrappers over audited primitives. No primitive is implemented here.
+//! Thin wrappers over third-party primitives. No primitive is implemented here.
+//!
+//! What is checked, and what is not:
+//! - ML-KEM-768 (`libcrux-ml-kem`, called from `handshake`) is the only one with machine-checked
+//!   proofs, and only in part. Per libcrux's own status table, hax/F* prove panic freedom and
+//!   functional correctness of the portable field arithmetic, NTT, compression and serialization,
+//!   and of most of the AVX2 code, but not of the IND-CPA layer, the matrix code or the generic
+//!   sampling and serialization, nor of the NEON code. Constant time is best effort, not proven:
+//!   its compile-time check, `check-secret-independence`, is off here.
+//! - ChaCha20-Poly1305, HKDF and SHA-2 (RustCrypto) and X25519 and ristretto255 (dalek) are
+//!   tested by their authors, not formally verified. The published audits of RustCrypto's AEADs
+//!   and of curve25519-dalek predate the versions used here.
+//! - This crate checks HKDF against RFC 5869 and the whole handshake against `vectors/v0*.json`,
+//!   which RustCrypto's `ml-kem` produced and libcrux reproduces byte for byte. Nothing here has
+//!   been audited.
 
 use chacha20poly1305::{AeadInOut, ChaCha20Poly1305, KeyInit};
 use hkdf::Hkdf;
