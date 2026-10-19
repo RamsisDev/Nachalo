@@ -16,7 +16,7 @@ those words alone, the two devices:
   (CPace + X25519 + ML-KEM-768);
 - swap one opaque payload each way, such as the first public key of a ratchet or the read
   capability of a channel;
-- catch an attacker who learned the 6 words and sits in the middle: B shows 3 safety words and A
+- catch an attacker who learned the 6 words and sits in the middle: B shows 4 safety words and A
   types them.
 
 Nachalo is a protocol, not a library. This document is its definition; the Rust crate in the same
@@ -28,7 +28,8 @@ check itself byte by byte.
 - Only online guesses at the words: every guess costs the attacker one live exchange with a
   victim, and victims cap how many they take.
 - Key secrecy against a passive attacker with a future quantum computer.
-- Detection of an active attacker who knows the words, with probability 1 - 2^-33 per attempt.
+- Detection of an active attacker who knows the words, with probability at least 1 - 2^-38 per
+  attempt (section 11.3).
 - No identifiers, accounts, or clocks on the wire. Messages are byte strings that the application
   carries over any transport.
 
@@ -70,7 +71,7 @@ check itself byte by byte.
 | `MAX_ANSWERS` | 64 | Wrong msg2 an initiator accepts before it gives up |
 | `MAX_PAYLOAD` | 1024 bytes | Largest payload either side may send |
 | `WORD_COUNT` | 6 | Invitation words, 66 bits |
-| `SAFETY_LEN` | 6 bytes | Safety words: 3 words, 33 bits |
+| `SAFETY_LEN` | 8 bytes | Safety words: 4 words, 44 bits |
 
 CPace suite: **CPACE-RISTR255-SHA512** from [CPACE], in the initiator-responder setting
 (`transcript_ir`). Its public shares are 32 bytes and its `ISK` is 64 bytes.
@@ -126,7 +127,7 @@ rejected. The normalized words, as bytes, are `PRS`, the CPace password.
 
 ### 5.5. Comparing safety words
 
-Typed safety words match when, lowercased and split on whitespace, they equal the 3 words of
+Typed safety words match when, lowercased and split on whitespace, they equal the 4 words of
 `to_words(safety)` in order.
 
 ## 6. Rendezvous
@@ -234,10 +235,10 @@ Both sides compute:
 ```text
 th     = T(msg1, msg2, msg3)
 key    = HKDF(th, ikm, L_KEY, 32)
-safety = HKDF(th, ikm, L_SAFETY, 6)
+safety = HKDF(th, ikm, L_SAFETY, 8)
 ```
 
-The handshake is not done yet. B shows `to_words(safety)`, 3 words. The two people compare them
+The handshake is not done yet. B shows `to_words(safety)`, 4 words. The two people compare them
 over a channel where they recognize each other, such as in person or on a call; the words are not
 secret. A types the words B reads out, and A's device accepts them only if they match its own
 (section 5.5). B's user confirms once A says they matched.
@@ -278,7 +279,8 @@ sent) and starts over with new words.
 - B answers every msg1 at the rendezvous, since unrelated invitations can share it and B cannot
   tell its peer's apart before the handshake ends. Each answer is one online guess for whoever
   sent that msg1, so B should cap how many msg1 it answers per invitation; this implementation
-  recommends `MAX_ANSWERS` as well.
+  recommends `MAX_ANSWERS` as well. The same cap bounds a man in the middle's chance of matching
+  the safety words (section 11.3).
 - Each pending step dies `INVITE_TTL` after it started, on its own device's clock. No time travels
   on the wire, so the two clocks never need to agree.
 
@@ -306,12 +308,20 @@ them can run one handshake with A, posing as B, and another with B, posing as A.
 The safety words catch it: the two sessions have different transcripts, so A's and B's safety
 words differ unless M makes them collide.
 
-M cannot steer the collision. In its session with B, M commits to its nonce in msg1 before it
-sees B's fresh msg2, so that session's safety words are fixed before M can influence them. In its
-session with A, M must send its msg2 before A reveals the nonce committed in msg1, and the safety
-words depend on that nonce. Each attempt therefore succeeds with probability 2^-33, and each
-attempt is a handshake that two people saw fail. This is the commit-then-reveal construction of
-short authentication string protocols [SAS], [ZRTP].
+M cannot steer the collision within a session. In its session with B, M commits to its nonce in
+msg1 before it sees B's fresh msg2, so that session's safety words are fixed before M can
+influence them. In its session with A, M must send its msg2 before A reveals the nonce committed
+in msg1, and the safety words depend on that nonce. One session with each side therefore matches
+with probability 2^-44.
+
+M can still open several sessions with B, since B answers every msg1 at the rendezvous up to its
+cap (section 10). M finishes with A first, computes the safety words of each of its sessions with
+B on its own, completes only one that matches and lets the others expire unseen. With `q` msg1
+answered by B, M goes unnoticed with probability at most `q * 2^-44`: 2^-38 with the recommended
+cap of 64. A takes a single msg2 to the end, so A's side adds no such factor. Every failed attempt
+is a handshake that two people saw fail or never complete. This is the commit-then-reveal
+construction of short authentication string protocols [SAS], [ZRTP], with their usual bound for
+parallel sessions.
 
 The commitment must hide the payload, which may be low-entropy or public: hence the 32-byte
 random nonce in it.

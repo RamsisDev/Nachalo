@@ -14,7 +14,7 @@
 //! confirmation. A failed `finish` leaves its state usable, so a third party's bogus answer
 //! cannot kill a handshake; A takes at most [`MAX_ANSWERS`] wrong ones.
 //!
-//! Someone who has the words can still sit in the middle. The 3 safety words, derived from the
+//! Someone who has the words can still sit in the middle. The 4 safety words, derived from the
 //! whole transcript, catch it: B shows them and A must type them. msg1 commits to a random nonce
 //! that msg3 reveals, which keeps such a man in the middle from grinding either session until
 //! both sides' words match: when it must fix its msg2 to A, A's nonce is still hidden.
@@ -43,8 +43,9 @@ pub const INVITE_TTL: u64 = 600;
 pub const MAX_ANSWERS: u8 = 64;
 /// Largest payload either side may send.
 pub const MAX_PAYLOAD: usize = 1024;
-/// Two bytes per safety word, 11 bits used: 3 words, 33 bits.
-pub const SAFETY_LEN: usize = 6;
+/// Two bytes per safety word, 11 bits used: 4 words, 44 bits. Someone in the middle who gets
+/// B to answer `q` msg1 matches them with probability `q * 2^-44`.
+pub const SAFETY_LEN: usize = 8;
 pub const RENDEZVOUS_LEN: usize = 32;
 /// Bytes of the words' hash the rendezvous id is derived from. Whoever watches that id learns at
 /// most these 24 bits of the words, and each answer is still a single online guess at the
@@ -329,7 +330,8 @@ impl Responder {
     /// Answers `msg1` found at the rendezvous: send msg2 back to A. It carries no time, so an old
     /// invitation is answered too; that is harmless, since only A, holding the words, can
     /// complete it and A drops it after the TTL. Every msg1 answered is an online guess for
-    /// whoever sent it, so cap how many you answer per invitation.
+    /// whoever sent it, and one more chance for someone in the middle to match the safety words,
+    /// so cap how many you answer per invitation; [`MAX_ANSWERS`] keeps that chance at 2^-38.
     pub fn respond(
         words: &str,
         context: &[u8],
@@ -454,7 +456,7 @@ impl Unconfirmed {
         self.established.role
     }
 
-    /// Three words, equal on both sides unless someone who had the invitation words sits in the
+    /// Four words, equal on both sides unless someone who had the invitation words sits in the
     /// middle. Not secret, but compare them over a channel where the two people recognize each
     /// other, such as in person or on a call. B shows them, A types them.
     pub fn safety_words(&self) -> Zeroizing<String> {
@@ -587,7 +589,7 @@ mod tests {
         let (a, b) = run("  ALPHA cable\techo forest orbit  Velvet ", |_, _| {}).unwrap();
         assert_eq!((a.role(), b.role()), (Role::Initiator, Role::Responder));
         let shown = b.safety_words();
-        assert_eq!(shown.split(' ').count(), 3);
+        assert_eq!(shown.split(' ').count(), 4);
         assert_eq!(
             a.verify("wrong words here", NOW).err(),
             Some(Error::Rejected)

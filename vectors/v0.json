@@ -17,7 +17,7 @@
     "ikm": "92e78a3713bfc1756837b87449f7b93bbdbc30d651ffe140fa31428494d184f0e480d6140913802fd5efd4e9c4cdb3e974678d7c40d5e7a05971fafd0c64f44b3f7988f3e7e289a468023b793e177578d102caec4fb5b979b21452a5864ead40dcdc1c1ae60905e3ce7b1966a602d5b80c5306ea4eb54b1882b4fe0f917fc5aa",
     "ml_kem_shared": "dcdc1c1ae60905e3ce7b1966a602d5b80c5306ea4eb54b1882b4fe0f917fc5aa",
     "rendezvous": "df523a4eb72d054873d480ce133e7dd100499eaa1f992308130f2bfa2a86c628",
-    "safety": "7b9447128067",
+    "safety": "7b9447128067ca3e",
     "seal_key_a": "b53321674e3ceb89a93f30c0eca2fbcd0b399488b34c2e7b431b0358fac610e7",
     "seal_key_b": "70c12424f144c76a0c92635d1c0acd2d00b07a58c1cb8da95db3e36f1ccd938b",
     "transcript": "2cbcf841894ef48b419e2fc5529fbf06f387fc5a0719469b9bb9e8b5e435e4a9",
@@ -34,7 +34,7 @@
     "export": "20c0bd0ce1af8aa1bdcfa232cf6346030701a5ac85f4c4072abc183fff69da14",
     "export_label": "6578616d706c65",
     "key": "7749a032a382c718d5fadcb3101278735f336bfd9df62c8d836700abc693d839",
-    "safety_words": "income time artefact",
+    "safety_words": "income time artefact elephant",
     "transcript": "2cbcf841894ef48b419e2fc5529fbf06f387fc5a0719469b9bb9e8b5e435e4a9"
   },
   "protocol": "Nachalo v0",

@@ -2,7 +2,7 @@
 //!
 //! A draws 6 [`words`] and gives them to B outside the system. In three messages
 //! ([`Initiator`] and [`Responder`]) both reach a shared key and swap one opaque payload each
-//! way, such as the first key of a ratchet or the read capability of a channel. B then shows 3
+//! way, such as the first key of a ratchet or the read capability of a channel. B then shows 4
 //! safety words that A types, so even someone who intercepted the 6 words cannot sit in the
 //! middle unnoticed.
 //!

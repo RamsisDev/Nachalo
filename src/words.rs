@@ -1,4 +1,4 @@
-//! Words from the BIP-39 English list: the 6 invitation words and the 3 safety words.
+//! Words from the BIP-39 English list: the 6 invitation words and the 4 safety words.
 
 use zeroize::Zeroizing;
 
