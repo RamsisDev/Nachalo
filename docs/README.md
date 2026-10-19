@@ -18,10 +18,10 @@ handshake and the safety words are identical.
 | | [Live](live.md) | [Appointment](appointment.md) | [Physical token](physical-token.md) |
 | --- | --- | --- | --- |
 | What people swap | 6 words | 5 words one way, 4 the other, and a start time | A token in person, and 6 words |
-| When the devices connect | Within 10 minutes | In a 30-minute window at the agreed time | Any time before the token expires |
+| When the devices connect | Within 10 minutes, by default | In a window at the agreed time, 30 minutes by default | Any time before the token expires |
 | Who starts | Who drew the words | Who drew the 5 words | Who received the token |
 | One leaked message gives away | The whole invitation | Half of it | The words, useless without the token |
-| Online guessing, per side | 2^-36 | 2^-77 | 2^-60 if the token is stolen |
+| Online guessing, per side, default limits | 2^-36 | 2^-77 | 2^-60 if the token is stolen |
 | Needs the wall clock | No | Yes | Yes |
 
 Pick:
@@ -46,7 +46,11 @@ each other, and if they differ, discard everything and start over.
   for it. The application maps it onto its transport.
 - **Initiator / responder**: the device that sends msg1 and msg3, and the device that answers
   with msg2.
-- **Payload**: up to 1024 opaque bytes each side sends to the other.
+- **Payload**: opaque bytes each side sends to the other, up to its own `max_payload` (1 KiB by
+  default). Every device accepts up to 8 KiB.
+- **Profile**: in the reference implementation, a named set of local limits with allowed ranges:
+  `INTERACTIVE` (the default), `PQ_MESSENGER` or `NEARBY`. See
+  [the handshake](handshake.md#time-and-limits).
 - **Safety words**: 4 words derived from the whole handshake. The responder shows them, the
   initiator types them.
 - **Online guess**: a guess at the invitation that costs the attacker a live exchange with a

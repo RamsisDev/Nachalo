@@ -23,7 +23,10 @@ const CONTEXT: &[u8] = b"nachalo test vectors";
 const PAYLOAD_A: &[u8] = b"payload from the initiator";
 const PAYLOAD_B: &[u8] = b"payload from the responder";
 const EXPORT_LABEL: &[u8] = b"example";
-const NOW: u64 = 1000;
+const NOW: Clock = Clock {
+    now: 1000,
+    now_unix: NOW_UNIX,
+};
 
 /// Random-looking bytes anyone can reproduce: SHA-512 of a label, as many blocks as needed.
 fn fixed<const N: usize>(label: &str) -> [u8; N] {
@@ -154,7 +157,10 @@ fn live() -> Value {
         "payload_a": h(PAYLOAD_A),
         "payload_b": h(PAYLOAD_B),
     });
-    generate(&Invitation::live(WORDS, CONTEXT).unwrap(), inputs)
+    generate(
+        &Invitation::live(WORDS, CONTEXT, &Config::default()).unwrap(),
+        inputs,
+    )
 }
 
 fn appointment() -> Value {
@@ -167,7 +173,9 @@ fn appointment() -> Value {
         "payload_a": h(PAYLOAD_A),
         "payload_b": h(PAYLOAD_B),
     });
-    let invitation = Invitation::appointment(WORDS_A, WORDS_B, AT, CONTEXT, NOW_UNIX).unwrap();
+    let invitation =
+        Invitation::appointment(WORDS_A, WORDS_B, AT, CONTEXT, NOW_UNIX, &Config::default())
+            .unwrap();
     generate(&invitation, inputs)
 }
 
@@ -184,7 +192,7 @@ fn token() -> Value {
         "payload_b": h(PAYLOAD_B),
     });
     generate(
-        &Invitation::physical_token(WORDS, &token, CONTEXT, NOW_UNIX).unwrap(),
+        &Invitation::physical_token(WORDS, &token, CONTEXT, NOW_UNIX, &Config::default()).unwrap(),
         inputs,
     )
 }

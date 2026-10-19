@@ -12,7 +12,7 @@
 //!
 //! Each payload is sealed under a key from the transcript so far, and its tag is that side's key
 //! confirmation. A failed `finish` leaves its state usable, so a third party's bogus answer
-//! cannot kill a handshake; A takes at most [`MAX_ANSWERS`] wrong ones.
+//! cannot kill a handshake; A takes at most its configured `max_answers` wrong ones.
 //!
 //! Someone who has the words can still sit in the middle. The 4 safety words, derived from the
 //! whole transcript, catch it: B shows them and A must type them. msg1 commits to a random nonce
@@ -25,7 +25,9 @@
 //!
 //! An [`Invitation`] holds what the words, and in the other modes the appointment time or the
 //! physical token, turn into: the CPace password and channel identifier, the rendezvous id and
-//! how long a step may stay pending. The messages are the same in every mode.
+//! when on the wall clock it can be used. The messages are the same in every mode.
+
+use std::ops::RangeInclusive;
 
 use curve25519_dalek::scalar::Scalar;
 use libcrux_ml_kem::mlkem768::{self, MlKem768Ciphertext, MlKem768PrivateKey, MlKem768PublicKey};
@@ -34,6 +36,7 @@ use subtle::ConstantTimeEq;
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::config::Config;
 use crate::cpace::{self, SHARE_LEN};
 use crate::crypto::{self, CT_LEN, EK_LEN, KEY_LEN, Key, TAG_LEN};
 use crate::words::{
@@ -42,13 +45,10 @@ use crate::words::{
 
 /// Domain separation for everything Nachalo derives. Changes with every incompatible version.
 pub const PROTOCOL: &[u8] = b"Nachalo v0";
-/// A pending handshake step dies this many seconds after it started, on its own device's
-/// clock. No time travels on the wire, so the two devices' clocks never need to agree.
-pub const INVITE_TTL: u64 = 600;
-/// Wrong msg2 an initiator takes before it gives up. Each one is an online guess at the words.
-pub const MAX_ANSWERS: u8 = 64;
-/// Largest payload either side may send.
-pub const MAX_PAYLOAD: usize = 1024;
+/// Largest payload every receiver accepts, whatever its own `max_payload` for sending: it holds
+/// an ML-KEM-1024 key plus an ML-DSA-65 key and signature, and the largest msg2 still fits a
+/// 16 KiB transport block.
+pub const PAYLOAD_CEILING: usize = 8192;
 /// Two bytes per safety word, 11 bits used: 4 words, 44 bits. Someone in the middle who gets
 /// B to answer `q` msg1 matches them with probability `q * 2^-44`.
 pub const SAFETY_LEN: usize = 8;
@@ -61,8 +61,6 @@ const RENDEZVOUS_TAG_LEN: usize = 3;
 /// fewer bits keep unrelated invitations apart: whoever watches the id learns at most 16 of A's
 /// 55 bits and nothing about B's 44.
 const APPOINTMENT_TAG_LEN: usize = 2;
-/// An appointment can be answered from its start time until this many seconds later, wall clock.
-pub const APPOINTMENT_WINDOW: u64 = 1800;
 /// A physical token: a 32-byte secret, then the last second it is valid as a big-endian Unix
 /// time.
 pub const TOKEN_LEN: usize = 40;
@@ -104,16 +102,44 @@ const LABEL_APPOINTMENT: &[u8] = b"Nachalo v0 appointment";
 const LABEL_TOKEN: &[u8] = b"Nachalo v0 physical token";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// Not the expected number of words from the list.
     BadWords,
     /// Past its deadline, out of answers, already finished, or outside the window of its
     /// appointment or physical token.
     Expired,
-    /// More than [`MAX_PAYLOAD`] bytes.
+    /// More than this device's `max_payload` bytes.
     PayloadTooLarge,
     /// Malformed input or failed confirmation, with no further detail.
     Rejected,
+    /// A setting outside its profile's range, or a token expiry past the end of time.
+    OutOfRange,
+}
+
+/// The two clocks every step reads.
+#[derive(Clone, Copy, Debug)]
+pub struct Clock {
+    /// Monotonic seconds, for the per-step TTL: a clock of this device only, that keeps
+    /// counting while it sleeps. Only differences on the same device matter.
+    pub now: u64,
+    /// Wall-clock Unix seconds, for the appointment window and the token's expiry.
+    pub now_unix: u64,
+}
+
+/// When a pending step dies: on the monotonic clock, or at the end of its window or token on the
+/// wall clock, whichever comes first. The wall clock catches monotonic clocks that stop while the
+/// device sleeps.
+#[derive(Clone, Copy)]
+struct Deadline {
+    now: u64,
+    unix: u64,
+}
+
+impl Deadline {
+    fn passed(self, clock: Clock) -> bool {
+        clock.now > self.now || clock.now_unix > self.unix
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,14 +159,15 @@ pub struct Invitation {
     /// The CPace channel identifier.
     channel: Vec<u8>,
     rendezvous: [u8; RENDEZVOUS_LEN],
-    /// How long a step started from this invitation may stay pending.
-    ttl: u64,
+    /// When, on the wall clock, a step may start or stay pending: always for live.
+    valid_unix: RangeInclusive<u64>,
+    config: Config,
 }
 
 impl Invitation {
     /// Live first contact: A draws [`WORD_COUNT`] words and both sides take part within
-    /// [`INVITE_TTL`].
-    pub fn live(words: &str, context: &[u8]) -> Result<Self, Error> {
+    /// `config`'s `invite_ttl`.
+    pub fn live(words: &str, context: &[u8], config: &Config) -> Result<Self, Error> {
         let words = normalize(words, WORD_COUNT).ok_or(Error::BadWords)?;
         let tag =
             crypto::hkdf::<RENDEZVOUS_TAG_LEN>(context, words.as_bytes(), LABEL_RENDEZVOUS_TAG);
@@ -148,27 +175,28 @@ impl Invitation {
             prs: Zeroizing::new(words.as_bytes().to_vec()),
             channel: cpace::lv_cat(&[PROTOCOL, context]),
             rendezvous: *crypto::hkdf(context, &*tag, LABEL_RENDEZVOUS),
-            ttl: INVITE_TTL,
+            valid_unix: 0..=u64::MAX,
+            config: *config,
         })
     }
 
     /// First contact at an agreed time: A draws [`APPOINTMENT_WORDS_A`] words, B draws
     /// [`APPOINTMENT_WORDS_B`], and they swap them along with `at`, the Unix time in seconds
-    /// when the appointment starts. Each side must build it, start and answer within
-    /// [`APPOINTMENT_WINDOW`] seconds from `at` on `now_unix`, its wall clock, and the whole
-    /// handshake, safety words included, must end by then. Invitations for another `at` never
-    /// complete.
+    /// when the appointment starts. Each side builds it, starts and answers only within
+    /// `config`'s `appointment_window` from `at` on its wall clock, and the whole handshake,
+    /// safety words included, must end by then. Invitations for another `at` never complete.
     pub fn appointment(
         words_a: &str,
         words_b: &str,
         at: u64,
         context: &[u8],
         now_unix: u64,
+        config: &Config,
     ) -> Result<Self, Error> {
         let a = normalize(words_a, APPOINTMENT_WORDS_A).ok_or(Error::BadWords)?;
         let b = normalize(words_b, APPOINTMENT_WORDS_B).ok_or(Error::BadWords)?;
-        let end = at.saturating_add(APPOINTMENT_WINDOW);
-        if now_unix < at || now_unix > end {
+        let valid_unix = at..=at.saturating_add(config.appointment_window.as_secs());
+        if !valid_unix.contains(&now_unix) {
             return Err(Error::Expired);
         }
         let channel = cpace::lv_cat(&[PROTOCOL, context, LABEL_APPOINTMENT, &at.to_be_bytes()]);
@@ -177,19 +205,21 @@ impl Invitation {
             prs: Zeroizing::new(cpace::lv_cat(&[a.as_bytes(), b.as_bytes()])),
             rendezvous: *crypto::hkdf(&channel, &*tag, LABEL_RENDEZVOUS),
             channel,
-            ttl: INVITE_TTL.min(end - now_unix),
+            valid_unix,
+            config: *config,
         })
     }
 
     /// First contact through a physical token: bytes from [`new_physical_token`] that A hands B
     /// in person on something B's device reads, along with [`WORD_COUNT`] words A gives B another
-    /// way. B starts the handshake and A answers. Each side must build it, start and answer by
-    /// the expiry the token carries, on `now_unix`, its wall clock.
+    /// way. B starts the handshake and A answers. Each side builds it, starts and answers only
+    /// until the expiry the token carries, on its wall clock.
     pub fn physical_token(
         words: &str,
         token: &[u8; TOKEN_LEN],
         context: &[u8],
         now_unix: u64,
+        config: &Config,
     ) -> Result<Self, Error> {
         let words = normalize(words, WORD_COUNT).ok_or(Error::BadWords)?;
         let expires =
@@ -203,7 +233,8 @@ impl Invitation {
             prs: Zeroizing::new(cpace::lv_cat(&[words.as_bytes(), token])),
             rendezvous: *crypto::hkdf(&channel, token, LABEL_RENDEZVOUS),
             channel,
-            ttl: INVITE_TTL.min(expires - now_unix),
+            valid_unix: 0..=expires,
+            config: *config,
         })
     }
 
@@ -216,19 +247,34 @@ impl Invitation {
         self.rendezvous
     }
 
-    fn deadline(&self, now: u64) -> u64 {
-        now.saturating_add(self.ttl)
+    /// Checks the wall clock and gives a step started now its deadline: `invite_ttl` later, or
+    /// the end of the window or token if that comes first.
+    fn deadline(&self, clock: Clock) -> Result<Deadline, Error> {
+        if !self.valid_unix.contains(&clock.now_unix) {
+            return Err(Error::Expired);
+        }
+        let unix = *self.valid_unix.end();
+        let ttl = self.config.invite_ttl.as_secs().min(unix - clock.now_unix);
+        Ok(Deadline {
+            now: clock.now.saturating_add(ttl),
+            unix,
+        })
     }
 }
 
-/// A new physical token for A to hand over, valid for `lifetime` seconds from `now_unix`. A keeps
-/// it to build its own [`Invitation::physical_token`]; erase it once it expires.
-pub fn new_physical_token(lifetime: u64, now_unix: u64) -> Zeroizing<[u8; TOKEN_LEN]> {
+/// A new physical token for A to hand over, valid for `lifetime` seconds from `now_unix`, with no
+/// upper bound. A keeps it to build its own [`Invitation::physical_token`]; erase it once it
+/// expires.
+pub fn new_physical_token(
+    lifetime: u64,
+    now_unix: u64,
+) -> Result<Zeroizing<[u8; TOKEN_LEN]>, Error> {
+    let expires = now_unix.checked_add(lifetime).ok_or(Error::OutOfRange)?;
     let mut token = Zeroizing::new([0u8; TOKEN_LEN]);
     token[..TOKEN_SECRET_LEN]
         .copy_from_slice(&*Zeroizing::new(crypto::random::<TOKEN_SECRET_LEN>()));
-    token[TOKEN_SECRET_LEN..].copy_from_slice(&now_unix.saturating_add(lifetime).to_be_bytes());
-    token
+    token[TOKEN_SECRET_LEN..].copy_from_slice(&expires.to_be_bytes());
+    Ok(token)
 }
 
 /// Every random value of an initiator, drawn up front so test vectors can fix them.
@@ -318,8 +364,9 @@ pub struct Initiator {
     nonce: Zeroizing<[u8; NONCE_LEN]>,
     payload: Zeroizing<Vec<u8>>,
     msg1: Vec<u8>,
-    deadline: u64,
-    answers: u8,
+    deadline: Deadline,
+    answers: u16,
+    max_answers: u16,
     finished: bool,
 }
 
@@ -331,23 +378,23 @@ impl Drop for Initiator {
 }
 
 impl Initiator {
-    /// Starts the handshake: send msg1 to [`Invitation::rendezvous`]. `now` is in seconds on a
-    /// clock of this device only.
+    /// Starts the handshake: send msg1 to [`Invitation::rendezvous`].
     pub fn start(
         invitation: &Invitation,
         payload: &[u8],
-        now: u64,
+        clock: Clock,
     ) -> Result<(Initiator, Vec<u8>), Error> {
-        Self::start_with(invitation, payload, now, InitiatorRandom::new())
+        Self::start_with(invitation, payload, clock, InitiatorRandom::new())
     }
 
     pub(crate) fn start_with(
         invitation: &Invitation,
         payload: &[u8],
-        now: u64,
+        clock: Clock,
         random: InitiatorRandom,
     ) -> Result<(Initiator, Vec<u8>), Error> {
-        if payload.len() > MAX_PAYLOAD {
+        let deadline = invitation.deadline(clock)?;
+        if payload.len() > invitation.config.max_payload {
             return Err(Error::PayloadTooLarge);
         }
         let g = cpace::generator(&invitation.prs, &invitation.channel, &random.sid);
@@ -369,23 +416,25 @@ impl Initiator {
             nonce: Zeroizing::new(random.nonce),
             payload: Zeroizing::new(payload.to_vec()),
             msg1: msg1.clone(),
-            deadline: invitation.deadline(now),
+            deadline,
             answers: 0,
+            max_answers: invitation.config.max_answers,
             finished: false,
         };
         Ok((initiator, msg1))
     }
 
-    /// The last second this invitation, safety words included, may complete.
+    /// The last second on the monotonic clock this invitation, safety words included, may
+    /// complete.
     pub fn deadline(&self) -> u64 {
-        self.deadline
+        self.deadline.now
     }
 
     /// Completes the handshake with B's msg2: send msg3 to B, then have the user type the
     /// safety words B shows into [`Unconfirmed::verify`]. A wrong msg2 leaves this invitation
-    /// usable until its deadline or [`MAX_ANSWERS`].
-    pub fn finish(&mut self, msg2: &[u8], now: u64) -> Result<(Unconfirmed, Vec<u8>), Error> {
-        if self.finished || self.answers >= MAX_ANSWERS || now > self.deadline() {
+    /// usable until its deadline or `max_answers`.
+    pub fn finish(&mut self, msg2: &[u8], clock: Clock) -> Result<(Unconfirmed, Vec<u8>), Error> {
+        if self.finished || self.answers >= self.max_answers || self.deadline.passed(clock) {
             return Err(Error::Expired);
         }
         let result = self.try_finish(msg2);
@@ -397,7 +446,7 @@ impl Initiator {
     }
 
     fn try_finish(&self, msg2: &[u8]) -> Result<(Unconfirmed, Vec<u8>), Error> {
-        if !(msg2_len(0)..=msg2_len(MAX_PAYLOAD)).contains(&msg2.len()) {
+        if !(msg2_len(0)..=msg2_len(PAYLOAD_CEILING)).contains(&msg2.len()) {
             return Err(Error::Rejected);
         }
         let (prefix, sealed_b) = msg2.split_at(SEALED_B_AT);
@@ -421,9 +470,51 @@ impl Initiator {
             &transcript.with(&msg3),
             &ikm,
             payload_b,
-            self.deadline(),
+            self.deadline,
         );
         Ok((unconfirmed, msg3))
+    }
+}
+
+/// B's side of one invitation: answers each msg1 found at its rendezvous, up to the invitation's
+/// `max_answers`. Keep one per invitation for as long as you watch its rendezvous.
+pub struct Listener<'a> {
+    invitation: &'a Invitation,
+    answers: u16,
+}
+
+impl<'a> Listener<'a> {
+    pub fn new(invitation: &'a Invitation) -> Self {
+        Listener {
+            invitation,
+            answers: 0,
+        }
+    }
+
+    /// Answers `msg1` found at the rendezvous: send msg2 back to A. It carries no time, so an old
+    /// msg1 is answered too; that is harmless, since only A, holding the words, can complete it
+    /// and A drops it after its TTL. Every msg1 answered is an online guess for whoever sent it,
+    /// and one more chance for someone in the middle to match the safety words, so once
+    /// `max_answers` were answered, or outside the invitation's window, this returns
+    /// [`Error::Expired`].
+    pub fn respond(
+        &mut self,
+        msg1: &[u8],
+        payload: &[u8],
+        clock: Clock,
+    ) -> Result<(Responder, Vec<u8>), Error> {
+        if self.answers >= self.invitation.config.max_answers {
+            return Err(Error::Expired);
+        }
+        let answer = Responder::respond_with(
+            self.invitation,
+            msg1,
+            payload,
+            clock,
+            ResponderRandom::new(),
+        )?;
+        self.answers += 1;
+        Ok(answer)
     }
 }
 
@@ -433,32 +524,19 @@ pub struct Responder {
     transcript: Transcript,
     /// A's commitment to the nonce and payload msg3 must carry.
     commitment: [u8; KEY_LEN],
-    deadline: u64,
+    deadline: Deadline,
 }
 
 impl Responder {
-    /// Answers `msg1` found at the rendezvous: send msg2 back to A. It carries no time, so an old
-    /// invitation is answered too; that is harmless, since only A, holding the words, can
-    /// complete it and A drops it after the TTL. Every msg1 answered is an online guess for
-    /// whoever sent it, and one more chance for someone in the middle to match the safety words,
-    /// so cap how many you answer per invitation; [`MAX_ANSWERS`] keeps that chance at 2^-38.
-    pub fn respond(
-        invitation: &Invitation,
-        msg1: &[u8],
-        payload: &[u8],
-        now: u64,
-    ) -> Result<(Responder, Vec<u8>), Error> {
-        Self::respond_with(invitation, msg1, payload, now, ResponderRandom::new())
-    }
-
     pub(crate) fn respond_with(
         invitation: &Invitation,
         msg1: &[u8],
         payload: &[u8],
-        now: u64,
+        clock: Clock,
         random: ResponderRandom,
     ) -> Result<(Responder, Vec<u8>), Error> {
-        if payload.len() > MAX_PAYLOAD {
+        let deadline = invitation.deadline(clock)?;
+        if payload.len() > invitation.config.max_payload {
             return Err(Error::PayloadTooLarge);
         }
         let msg1: &[u8; MSG1_LEN] = msg1.try_into().map_err(|_| Error::Rejected)?;
@@ -488,24 +566,24 @@ impl Responder {
             ikm,
             transcript: transcript.with(&msg2),
             commitment: msg1[COMMIT_AT..EK_AT].try_into().expect("fixed layout"),
-            deadline: invitation.deadline(now),
+            deadline,
         };
         Ok((responder, msg2))
     }
 
-    /// The last second this answer, safety words included, may complete.
+    /// The last second on the monotonic clock this answer, safety words included, may complete.
     pub fn deadline(&self) -> u64 {
-        self.deadline
+        self.deadline.now
     }
 
     /// Completes the handshake with A's msg3: show the user [`Unconfirmed::safety_words`] to
     /// read out to A, and [`Unconfirmed::confirm`] once A says they matched. A forged msg3
     /// leaves this answer usable: it reveals nothing about the words.
-    pub fn finish(&self, msg3: &[u8], now: u64) -> Result<Unconfirmed, Error> {
-        if now > self.deadline() {
+    pub fn finish(&self, msg3: &[u8], clock: Clock) -> Result<Unconfirmed, Error> {
+        if self.deadline.passed(clock) {
             return Err(Error::Expired);
         }
-        if !(msg3_len(0)..=msg3_len(MAX_PAYLOAD)).contains(&msg3.len()) {
+        if !(msg3_len(0)..=msg3_len(PAYLOAD_CEILING)).contains(&msg3.len()) {
             return Err(Error::Rejected);
         }
         let plaintext = crypto::open(&key(&self.transcript, &self.ikm, LABEL_SEAL_A), msg3)
@@ -519,7 +597,7 @@ impl Responder {
             &self.transcript.with(msg3),
             &self.ikm,
             Zeroizing::new(payload_a.to_vec()),
-            self.deadline(),
+            self.deadline,
         ))
     }
 }
@@ -529,7 +607,7 @@ impl Responder {
 pub struct Unconfirmed {
     established: Established,
     safety: [u8; SAFETY_LEN],
-    deadline: u64,
+    deadline: Deadline,
 }
 
 impl Unconfirmed {
@@ -538,7 +616,7 @@ impl Unconfirmed {
         transcript: &Transcript,
         ikm: &[u8; IKM_LEN],
         peer_payload: Zeroizing<Vec<u8>>,
-        deadline: u64,
+        deadline: Deadline,
     ) -> Self {
         let th = transcript.hash();
         Unconfirmed {
@@ -567,8 +645,8 @@ impl Unconfirmed {
     /// A: opens the session once the user types the safety words B shows, ignoring case and
     /// spacing. A mismatch, from a typo or from someone in the middle, leaves it pending until
     /// the deadline; tell the user to stop if the words really differ.
-    pub fn verify(&self, typed: &str, now: u64) -> Result<Established, Error> {
-        if now > self.deadline {
+    pub fn verify(&self, typed: &str, clock: Clock) -> Result<Established, Error> {
+        if self.deadline.passed(clock) {
             return Err(Error::Expired);
         }
         if spells(typed, &self.safety) {
@@ -579,8 +657,8 @@ impl Unconfirmed {
     }
 
     /// B: opens the session once A says the safety words matched.
-    pub fn confirm(self, now: u64) -> Result<Established, Error> {
-        if now > self.deadline {
+    pub fn confirm(self, clock: Clock) -> Result<Established, Error> {
+        if self.deadline.passed(clock) {
             return Err(Error::Expired);
         }
         Ok(self.established)
@@ -672,7 +750,11 @@ mod vectors;
 
 #[cfg(test)]
 mod tests {
+    use std::ops::{Add, Sub};
+    use std::time::Duration;
+
     use super::*;
+    use crate::config::{Bounded, Profile};
 
     const WORDS: &str = "alpha cable echo forest orbit velvet";
     const WRONG: &str = "alpha cable echo forest orbit zoo";
@@ -680,9 +762,38 @@ mod tests {
     const CTX: &[u8] = b"test context";
     const PA: &[u8] = b"payload from A";
     const PB: &[u8] = b"payload from B, a bit longer";
+    const CFG: Config = Config::new(&Profile::INTERACTIVE);
+    const TTL: u64 = 600;
+    const MAX_ANSWERS: u16 = 64;
+    const MAX_PAYLOAD: usize = 1024;
+    const WINDOW: u64 = 1800;
+    const PROFILES: [&Profile; 3] = [
+        &Profile::INTERACTIVE,
+        &Profile::PQ_MESSENGER,
+        &Profile::NEARBY,
+    ];
+
+    /// `now` on the monotonic clock, with the wall clock at the start of the appointment.
+    fn c(now: u64) -> Clock {
+        Clock { now, now_unix: AT }
+    }
+
+    /// `now_unix` on the wall clock, with the monotonic clock at `NOW`.
+    fn wall(now_unix: u64) -> Clock {
+        Clock { now: NOW, now_unix }
+    }
 
     fn live(words: &str) -> Invitation {
-        Invitation::live(words, CTX).unwrap()
+        Invitation::live(words, CTX, &CFG).unwrap()
+    }
+
+    fn respond(
+        invitation: &Invitation,
+        msg1: &[u8],
+        payload: &[u8],
+        clock: Clock,
+    ) -> Result<(Responder, Vec<u8>), Error> {
+        Listener::new(invitation).respond(msg1, payload, clock)
     }
 
     /// Runs a handshake, letting `tamper` change message `n` on the wire.
@@ -690,13 +801,13 @@ mod tests {
         words_b: &str,
         tamper: impl Fn(usize, &mut Vec<u8>),
     ) -> Result<(Unconfirmed, Unconfirmed), Error> {
-        let (mut a, mut msg1) = Initiator::start(&live(WORDS), PA, NOW)?;
+        let (mut a, mut msg1) = Initiator::start(&live(WORDS), PA, c(NOW))?;
         tamper(1, &mut msg1);
-        let (b, mut msg2) = Responder::respond(&live(words_b), &msg1, PB, NOW + 1)?;
+        let (b, mut msg2) = respond(&live(words_b), &msg1, PB, c(NOW + 1))?;
         tamper(2, &mut msg2);
-        let (a, mut msg3) = a.finish(&msg2, NOW + 2)?;
+        let (a, mut msg3) = a.finish(&msg2, c(NOW + 2))?;
         tamper(3, &mut msg3);
-        Ok((a, b.finish(&msg3, NOW + 3)?))
+        Ok((a, b.finish(&msg3, c(NOW + 3))?))
     }
 
     #[test]
@@ -706,11 +817,11 @@ mod tests {
         let shown = b.safety_words();
         assert_eq!(shown.split(' ').count(), 4);
         assert_eq!(
-            a.verify("wrong words here", NOW).err(),
+            a.verify("wrong words here", c(NOW)).err(),
             Some(Error::Rejected)
         );
-        let a = a.verify(&shown.to_uppercase(), NOW + 4).unwrap();
-        let b = b.confirm(NOW + 4).unwrap();
+        let a = a.verify(&shown.to_uppercase(), c(NOW + 4)).unwrap();
+        let b = b.confirm(c(NOW + 4)).unwrap();
         assert_eq!(a.key(), b.key());
         assert_eq!(a.transcript(), b.transcript());
         assert_eq!((a.peer_payload(), b.peer_payload()), (PB, PA));
@@ -721,13 +832,14 @@ mod tests {
 
     #[test]
     fn message_lengths() {
-        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
         assert_eq!(msg1.len(), MSG1_LEN);
         assert_eq!(MSG1_LEN, 1296);
-        let (_, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
+        let (_, msg2) = respond(&live(WORDS), &msg1, PB, c(NOW)).unwrap();
         assert_eq!(msg2.len(), msg2_len(PB.len()));
-        let (_, msg3) = a.finish(&msg2, NOW).unwrap();
+        let (_, msg3) = a.finish(&msg2, c(NOW)).unwrap();
         assert_eq!(msg3.len(), msg3_len(PA.len()));
+        assert_eq!(msg2_len(PAYLOAD_CEILING), 9360);
     }
 
     #[test]
@@ -736,44 +848,74 @@ mod tests {
             (&[][..], &[][..]),
             (&[7; MAX_PAYLOAD][..], &[9; MAX_PAYLOAD][..]),
         ] {
-            let (mut a, msg1) = Initiator::start(&live(WORDS), pa, NOW).unwrap();
-            let (b, msg2) = Responder::respond(&live(WORDS), &msg1, pb, NOW).unwrap();
-            let (a, msg3) = a.finish(&msg2, NOW).unwrap();
-            let b = b.finish(&msg3, NOW).unwrap();
-            let a = a.verify(&b.safety_words(), NOW).unwrap();
-            let b = b.confirm(NOW).unwrap();
+            let (mut a, msg1) = Initiator::start(&live(WORDS), pa, c(NOW)).unwrap();
+            let (b, msg2) = respond(&live(WORDS), &msg1, pb, c(NOW)).unwrap();
+            let (a, msg3) = a.finish(&msg2, c(NOW)).unwrap();
+            let b = b.finish(&msg3, c(NOW)).unwrap();
+            let a = a.verify(&b.safety_words(), c(NOW)).unwrap();
+            let b = b.confirm(c(NOW)).unwrap();
             assert_eq!((a.peer_payload(), b.peer_payload()), (pb, pa));
         }
         let big = [0; MAX_PAYLOAD + 1];
         assert_eq!(
-            Initiator::start(&live(WORDS), &big, NOW).err(),
+            Initiator::start(&live(WORDS), &big, c(NOW)).err(),
             Some(Error::PayloadTooLarge)
         );
-        let (_, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+        let (_, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
         assert_eq!(
-            Responder::respond(&live(WORDS), &msg1, &big, NOW).err(),
+            respond(&live(WORDS), &msg1, &big, c(NOW)).err(),
             Some(Error::PayloadTooLarge)
+        );
+    }
+
+    #[test]
+    fn every_receiver_accepts_up_to_the_ceiling() {
+        let config = Config::new(&Profile::PQ_MESSENGER)
+            .with_max_payload(PAYLOAD_CEILING)
+            .unwrap();
+        let large = Invitation::live(WORDS, CTX, &config).unwrap();
+        let small = live(WORDS);
+        let mut max = vec![7; PAYLOAD_CEILING];
+
+        // A device that sends at most 1 KiB still receives the most the other may send.
+        let (mut a, msg1) = Initiator::start(&large, &max, c(NOW)).unwrap();
+        let (b, msg2) = respond(&small, &msg1, PB, c(NOW)).unwrap();
+        let (_, msg3) = a.finish(&msg2, c(NOW)).unwrap();
+        assert!(b.finish(&msg3, c(NOW)).is_ok());
+        let (mut a, msg1) = Initiator::start(&small, PA, c(NOW)).unwrap();
+        let (_, msg2) = respond(&large, &msg1, &max, c(NOW)).unwrap();
+        assert!(a.finish(&msg2, c(NOW)).is_ok());
+
+        // One byte more is refused before anything is sent.
+        max.push(0);
+        assert_eq!(
+            Initiator::start(&large, &max, c(NOW)).err(),
+            Some(Error::PayloadTooLarge)
+        );
+        assert_eq!(
+            config.with_max_payload(PAYLOAD_CEILING + 1).err(),
+            Some(Error::OutOfRange)
         );
     }
 
     #[test]
     fn a_man_in_the_middle_with_the_words_shows_different_safety_words() {
         // M answers A as B and invites B as A, running two handshakes with the same words.
-        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
-        let (m_as_b, msg2) = Responder::respond(&live(WORDS), &msg1, b"M", NOW).unwrap();
-        let (a, msg3) = a.finish(&msg2, NOW).unwrap();
-        let m_with_a = m_as_b.finish(&msg3, NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
+        let (m_as_b, msg2) = respond(&live(WORDS), &msg1, b"M", c(NOW)).unwrap();
+        let (a, msg3) = a.finish(&msg2, c(NOW)).unwrap();
+        let m_with_a = m_as_b.finish(&msg3, c(NOW)).unwrap();
 
-        let (mut m_as_a, msg1) = Initiator::start(&live(WORDS), b"M", NOW).unwrap();
-        let (b, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
-        let (m_with_b, msg3) = m_as_a.finish(&msg2, NOW).unwrap();
-        let b = b.finish(&msg3, NOW).unwrap();
+        let (mut m_as_a, msg1) = Initiator::start(&live(WORDS), b"M", c(NOW)).unwrap();
+        let (b, msg2) = respond(&live(WORDS), &msg1, PB, c(NOW)).unwrap();
+        let (m_with_b, msg3) = m_as_a.finish(&msg2, c(NOW)).unwrap();
+        let b = b.finish(&msg3, c(NOW)).unwrap();
 
         assert_eq!(*a.safety_words(), *m_with_a.safety_words());
         assert_eq!(*b.safety_words(), *m_with_b.safety_words());
         assert_ne!(a.safety, b.safety);
         assert_eq!(
-            a.verify(&b.safety_words(), NOW).err(),
+            a.verify(&b.safety_words(), c(NOW)).err(),
             Some(Error::Rejected)
         );
     }
@@ -781,16 +923,16 @@ mod tests {
     #[test]
     fn msg3_must_open_the_commitment() {
         for swap_nonce in [true, false] {
-            let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
-            let (b, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
+            let (mut a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
+            let (b, msg2) = respond(&live(WORDS), &msg1, PB, c(NOW)).unwrap();
             // A grinding man in the middle swaps in another nonce, or payload, after msg2.
             if swap_nonce {
                 a.nonce = Zeroizing::new([3; NONCE_LEN]);
             } else {
                 a.payload = Zeroizing::new(b"other".to_vec());
             }
-            let (_, msg3) = a.finish(&msg2, NOW).unwrap();
-            assert_eq!(b.finish(&msg3, NOW).err(), Some(Error::Rejected));
+            let (_, msg3) = a.finish(&msg2, c(NOW)).unwrap();
+            assert_eq!(b.finish(&msg3, c(NOW)).err(), Some(Error::Rejected));
         }
     }
 
@@ -801,46 +943,64 @@ mod tests {
 
     #[test]
     fn different_contexts_never_complete() {
-        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
-        let (_, msg2) =
-            Responder::respond(&Invitation::live(WORDS, b"other").unwrap(), &msg1, PB, NOW)
-                .unwrap();
-        assert_eq!(a.finish(&msg2, NOW).err(), Some(Error::Rejected));
-        let (_, msg2) =
-            Responder::respond(&Invitation::live(WORDS, b"").unwrap(), &msg1, PB, NOW).unwrap();
-        assert_eq!(a.finish(&msg2, NOW).err(), Some(Error::Rejected));
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
+        let other = Invitation::live(WORDS, b"other", &CFG).unwrap();
+        let (_, msg2) = respond(&other, &msg1, PB, c(NOW)).unwrap();
+        assert_eq!(a.finish(&msg2, c(NOW)).err(), Some(Error::Rejected));
+        let empty = Invitation::live(WORDS, b"", &CFG).unwrap();
+        let (_, msg2) = respond(&empty, &msg1, PB, c(NOW)).unwrap();
+        assert_eq!(a.finish(&msg2, c(NOW)).err(), Some(Error::Rejected));
     }
 
     #[test]
     fn bogus_answers_leave_both_sides_usable() {
-        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
-        let (_, guess) = Responder::respond(&live(WRONG), &msg1, PB, NOW).unwrap();
-        assert_eq!(a.finish(&guess, NOW).err(), Some(Error::Rejected));
-        assert_eq!(a.finish(&[0; 2000], NOW).err(), Some(Error::Rejected));
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
+        let (_, guess) = respond(&live(WRONG), &msg1, PB, c(NOW)).unwrap();
+        assert_eq!(a.finish(&guess, c(NOW)).err(), Some(Error::Rejected));
+        assert_eq!(a.finish(&[0; 2000], c(NOW)).err(), Some(Error::Rejected));
 
-        let (b, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
-        let (a, msg3) = a.finish(&msg2, NOW).unwrap();
+        let (b, msg2) = respond(&live(WORDS), &msg1, PB, c(NOW)).unwrap();
+        let (a, msg3) = a.finish(&msg2, c(NOW)).unwrap();
         let mut forged = msg3.clone();
         forged[0] ^= 1;
-        assert_eq!(b.finish(&forged, NOW).err(), Some(Error::Rejected));
-        let b = b.finish(&msg3, NOW).unwrap();
+        assert_eq!(b.finish(&forged, c(NOW)).err(), Some(Error::Rejected));
+        let b = b.finish(&msg3, c(NOW)).unwrap();
         assert_eq!(*a.safety_words(), *b.safety_words());
     }
 
     #[test]
     fn an_initiator_takes_max_answers_wrong_ones_then_finishes_once() {
-        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
-        let (_, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
-        let (_, guess) = Responder::respond(&live(WRONG), &msg1, PB, NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
+        let (_, msg2) = respond(&live(WORDS), &msg1, PB, c(NOW)).unwrap();
+        let (_, guess) = respond(&live(WRONG), &msg1, PB, c(NOW)).unwrap();
         for _ in 0..MAX_ANSWERS {
-            assert_eq!(a.finish(&guess, NOW).err(), Some(Error::Rejected));
+            assert_eq!(a.finish(&guess, c(NOW)).err(), Some(Error::Rejected));
         }
-        assert_eq!(a.finish(&msg2, NOW).err(), Some(Error::Expired));
+        assert_eq!(a.finish(&msg2, c(NOW)).err(), Some(Error::Expired));
 
-        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
-        let (_, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
-        assert!(a.finish(&msg2, NOW).is_ok());
-        assert_eq!(a.finish(&msg2, NOW).err(), Some(Error::Expired));
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
+        let (_, msg2) = respond(&live(WORDS), &msg1, PB, c(NOW)).unwrap();
+        assert!(a.finish(&msg2, c(NOW)).is_ok());
+        assert_eq!(a.finish(&msg2, c(NOW)).err(), Some(Error::Expired));
+    }
+
+    #[test]
+    fn a_listener_answers_max_answers_msg1_then_stops() {
+        let invitation = live(WORDS);
+        let mut listener = Listener::new(&invitation);
+        let (_, msg1) = Initiator::start(&invitation, PA, c(NOW)).unwrap();
+        // A malformed msg1 gets no answer, so it does not count.
+        assert_eq!(
+            listener.respond(&msg1[1..], PB, c(NOW)).err(),
+            Some(Error::Rejected)
+        );
+        for _ in 0..MAX_ANSWERS {
+            assert!(listener.respond(&msg1, PB, c(NOW)).is_ok());
+        }
+        assert_eq!(
+            listener.respond(&msg1, PB, c(NOW)).err(),
+            Some(Error::Expired)
+        );
     }
 
     #[test]
@@ -890,15 +1050,16 @@ mod tests {
             };
             assert_eq!(run(WORDS, resize).err(), Some(Error::Rejected), "msg{msg}");
         }
-        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
-        let (b, _) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
-        assert_eq!(a.finish(&[], NOW).err(), Some(Error::Rejected));
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
+        let (b, _) = respond(&live(WORDS), &msg1, PB, c(NOW)).unwrap();
+        assert_eq!(a.finish(&[], c(NOW)).err(), Some(Error::Rejected));
         assert_eq!(
-            a.finish(&vec![0; msg2_len(MAX_PAYLOAD) + 1], NOW).err(),
+            a.finish(&vec![0; msg2_len(PAYLOAD_CEILING) + 1], c(NOW))
+                .err(),
             Some(Error::Rejected)
         );
         assert_eq!(
-            b.finish(&[0; NONCE_LEN + TAG_LEN - 1], NOW).err(),
+            b.finish(&[0; NONCE_LEN + TAG_LEN - 1], c(NOW)).err(),
             Some(Error::Rejected)
         );
     }
@@ -906,34 +1067,34 @@ mod tests {
     #[test]
     fn each_side_expires_its_own_step_on_its_own_clock() {
         const B_CLOCK: u64 = 42;
-        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
-        let (b, msg2) = Responder::respond(&live(WORDS), &msg1, PB, B_CLOCK).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
+        let (b, msg2) = respond(&live(WORDS), &msg1, PB, c(B_CLOCK)).unwrap();
         assert_eq!(
-            a.finish(&msg2, NOW + INVITE_TTL + 1).err(),
+            a.finish(&msg2, c(NOW + TTL + 1)).err(),
             Some(Error::Expired)
         );
-        let (a, msg3) = a.finish(&msg2, NOW + INVITE_TTL).unwrap();
+        let (a, msg3) = a.finish(&msg2, c(NOW + TTL)).unwrap();
         assert_eq!(
-            b.finish(&msg3, B_CLOCK + INVITE_TTL + 1).err(),
+            b.finish(&msg3, c(B_CLOCK + TTL + 1)).err(),
             Some(Error::Expired)
         );
-        let b = b.finish(&msg3, B_CLOCK + INVITE_TTL).unwrap();
+        let b = b.finish(&msg3, c(B_CLOCK + TTL)).unwrap();
         let words = b.safety_words();
         assert_eq!(
-            a.verify(&words, NOW + INVITE_TTL + 1).err(),
+            a.verify(&words, c(NOW + TTL + 1)).err(),
             Some(Error::Expired)
         );
-        assert!(a.verify(&words, NOW + INVITE_TTL).is_ok());
-        assert_eq!(
-            b.confirm(B_CLOCK + INVITE_TTL + 1).err(),
-            Some(Error::Expired)
-        );
+        assert!(a.verify(&words, c(NOW + TTL)).is_ok());
+        assert_eq!(b.confirm(c(B_CLOCK + TTL + 1)).err(), Some(Error::Expired));
     }
 
     #[test]
     fn bad_words_rejected_up_front() {
         for words in ["my dog is called max now", "alpha", ""] {
-            assert_eq!(Invitation::live(words, CTX).err(), Some(Error::BadWords));
+            assert_eq!(
+                Invitation::live(words, CTX, &CFG).err(),
+                Some(Error::BadWords)
+            );
         }
     }
 
@@ -945,26 +1106,91 @@ mod tests {
             id
         );
         assert_ne!(live(WRONG).rendezvous(), id);
-        assert_ne!(Invitation::live(WORDS, b"other").unwrap().rendezvous(), id);
+        let other = Invitation::live(WORDS, b"other", &CFG).unwrap();
+        assert_ne!(other.rendezvous(), id);
         let tag = crypto::hkdf::<RENDEZVOUS_TAG_LEN>(CTX, WORDS.as_bytes(), LABEL_RENDEZVOUS_TAG);
         assert_eq!(*crypto::hkdf(CTX, &*tag, LABEL_RENDEZVOUS), id);
+    }
+
+    /// Checks that `with` takes a setting's bounds and refuses one unit beyond them.
+    fn check_range<T>(bounds: Bounded<T>, unit: T, with: impl Fn(T) -> Result<Config, Error>)
+    where
+        T: Copy + Default + PartialEq + Add<Output = T> + Sub<Output = T>,
+    {
+        for value in [bounds.min, bounds.default, bounds.max] {
+            assert!(with(value).is_ok());
+        }
+        assert_eq!(with(bounds.max + unit).err(), Some(Error::OutOfRange));
+        if bounds.min != T::default() {
+            assert_eq!(with(bounds.min - unit).err(), Some(Error::OutOfRange));
+        }
+    }
+
+    #[test]
+    fn settings_stay_within_their_profile() {
+        let second = Duration::from_secs(1);
+        for profile in PROFILES {
+            let config = Config::new(profile);
+            check_range(profile.invite_ttl, second, |v| config.with_invite_ttl(v));
+            check_range(profile.max_answers, 1, |v| config.with_max_answers(v));
+            check_range(profile.max_payload, 1, |v| config.with_max_payload(v));
+            check_range(profile.appointment_window, second, |v| {
+                config.with_appointment_window(v)
+            });
+        }
+        assert_eq!(CFG.guess_bound_log2(), -36);
+        assert_eq!(Config::new(&Profile::NEARBY).guess_bound_log2(), -40);
+        let custom = CFG.with_invite_ttl(Duration::from_secs(120)).unwrap();
+        let (a, _) =
+            Initiator::start(&Invitation::live(WORDS, CTX, &custom).unwrap(), PA, c(NOW)).unwrap();
+        assert_eq!(a.deadline(), NOW + 120);
     }
 
     const WORDS_A: &str = "alpha cable echo forest orbit";
     const WORDS_B: &str = "velvet stone happy river";
     const AT: u64 = 1_900_000_000;
+    const DAY: u64 = 24 * 3600;
 
     fn appointment(words_b: &str, at: u64, now_unix: u64) -> Result<Invitation, Error> {
-        Invitation::appointment(WORDS_A, words_b, at, CTX, now_unix)
+        Invitation::appointment(WORDS_A, words_b, at, CTX, now_unix, &CFG)
     }
 
-    /// Runs a handshake between two invitations; both clocks are passed as `NOW`.
-    fn complete(a: &Invitation, b: &Invitation) -> Result<(Established, Established), Error> {
-        let (mut ia, msg1) = Initiator::start(a, PA, NOW)?;
-        let (rb, msg2) = Responder::respond(b, &msg1, PB, NOW)?;
-        let (ua, msg3) = ia.finish(&msg2, NOW)?;
-        let ub = rb.finish(&msg3, NOW)?;
-        Ok((ua.verify(&ub.safety_words(), NOW)?, ub.confirm(NOW)?))
+    fn token(words: &str, token: &[u8; TOKEN_LEN], now_unix: u64) -> Result<Invitation, Error> {
+        Invitation::physical_token(words, token, CTX, now_unix, &CFG)
+    }
+
+    /// Runs a handshake between two invitations, every step at `clock`.
+    fn complete(
+        a: &Invitation,
+        b: &Invitation,
+        clock: Clock,
+    ) -> Result<(Established, Established), Error> {
+        let (mut ia, msg1) = Initiator::start(a, PA, clock)?;
+        let (rb, msg2) = respond(b, &msg1, PB, clock)?;
+        let (ua, msg3) = ia.finish(&msg2, clock)?;
+        let ub = rb.finish(&msg3, clock)?;
+        Ok((ua.verify(&ub.safety_words(), clock)?, ub.confirm(clock)?))
+    }
+
+    #[test]
+    fn every_pair_of_profiles_completes_in_every_mode() {
+        let secret = new_physical_token(3600, AT).unwrap();
+        for pa in PROFILES {
+            for pb in PROFILES {
+                let pair = |config: &Config| {
+                    [
+                        Invitation::live(WORDS, CTX, config).unwrap(),
+                        Invitation::appointment(WORDS_A, WORDS_B, AT, CTX, AT, config).unwrap(),
+                        Invitation::physical_token(WORDS, &secret, CTX, AT, config).unwrap(),
+                    ]
+                };
+                let (a, b) = (pair(&Config::new(pa)), pair(&Config::new(pb)));
+                for (a, b) in a.iter().zip(&b) {
+                    let (a, b) = complete(a, b, c(NOW)).unwrap();
+                    assert_eq!(a.key(), b.key(), "{} with {}", pa.name, pb.name);
+                }
+            }
+        }
     }
 
     #[test]
@@ -976,31 +1202,59 @@ mod tests {
             AT,
             CTX,
             AT + 1799,
+            &CFG,
         )
         .unwrap();
         assert_eq!(a.rendezvous(), b.rendezvous());
-        let (a, b) = complete(&a, &b).unwrap();
+        let (a, b) = complete(&a, &b, wall(AT + 1799)).unwrap();
         assert_eq!(a.key(), b.key());
         assert_eq!((a.peer_payload(), b.peer_payload()), (PB, PA));
     }
 
     #[test]
     fn an_appointment_outside_its_window_fails() {
-        for now_unix in [0, AT - 1, AT + APPOINTMENT_WINDOW + 1, u64::MAX] {
+        for now_unix in [0, AT - 1, AT + WINDOW + 1, u64::MAX] {
             assert_eq!(
                 appointment(WORDS_B, AT, now_unix).err(),
                 Some(Error::Expired)
             );
         }
-        assert!(appointment(WORDS_B, AT, AT + APPOINTMENT_WINDOW).is_ok());
+        assert!(appointment(WORDS_B, AT, AT + WINDOW).is_ok());
 
-        // A step started near the end dies with the window, not INVITE_TTL later.
-        let late = appointment(WORDS_B, AT, AT + APPOINTMENT_WINDOW - 5).unwrap();
-        let (mut a, msg1) = Initiator::start(&late, PA, NOW).unwrap();
+        // A step started near the end dies with the window, not invite_ttl later.
+        let late = appointment(WORDS_B, AT, AT + WINDOW - 5).unwrap();
+        let (mut a, msg1) = Initiator::start(&late, PA, wall(AT + WINDOW - 5)).unwrap();
         assert_eq!(a.deadline(), NOW + 5);
-        let (b, msg2) = Responder::respond(&late, &msg1, PB, NOW).unwrap();
+        let (b, msg2) = respond(&late, &msg1, PB, wall(AT + WINDOW - 5)).unwrap();
         assert_eq!(b.deadline(), NOW + 5);
-        assert_eq!(a.finish(&msg2, NOW + 6).err(), Some(Error::Expired));
+        let after = Clock {
+            now: NOW + 6,
+            now_unix: AT + WINDOW - 5,
+        };
+        assert_eq!(a.finish(&msg2, after).err(), Some(Error::Expired));
+    }
+
+    #[test]
+    fn an_appointment_built_inside_its_window_stops_working_when_it_closes() {
+        let invitation = appointment(WORDS_B, AT, AT).unwrap();
+        let closed = wall(AT + WINDOW + 1);
+        assert_eq!(
+            Initiator::start(&invitation, PA, closed).err(),
+            Some(Error::Expired)
+        );
+        let (mut a, msg1) = Initiator::start(&invitation, PA, wall(AT)).unwrap();
+        assert_eq!(
+            respond(&invitation, &msg1, PB, closed).err(),
+            Some(Error::Expired)
+        );
+        // Three days later, with a monotonic clock that stopped while the device slept.
+        let (b, msg2) = respond(&invitation, &msg1, PB, wall(AT)).unwrap();
+        assert_eq!(
+            a.finish(&msg2, wall(AT + 3 * DAY)).err(),
+            Some(Error::Expired)
+        );
+        let (_, msg3) = a.finish(&msg2, wall(AT)).unwrap();
+        assert_eq!(b.finish(&msg3, closed).err(), Some(Error::Expired));
     }
 
     #[test]
@@ -1008,9 +1262,12 @@ mod tests {
         let a = appointment(WORDS_B, AT, AT).unwrap();
         let other_time = appointment(WORDS_B, AT + 60, AT + 60).unwrap();
         assert_ne!(a.rendezvous(), other_time.rendezvous());
-        assert_eq!(complete(&a, &other_time).err(), Some(Error::Rejected));
+        assert_eq!(
+            complete(&a, &other_time, wall(AT + 60)).err(),
+            Some(Error::Rejected)
+        );
         let wrong_b = appointment("velvet stone happy zoo", AT, AT).unwrap();
-        assert_eq!(complete(&a, &wrong_b).err(), Some(Error::Rejected));
+        assert_eq!(complete(&a, &wrong_b, c(NOW)).err(), Some(Error::Rejected));
         // The same 9 words split differently are another password.
         let split = Invitation::appointment(
             "alpha cable echo forest",
@@ -1018,11 +1275,12 @@ mod tests {
             AT,
             CTX,
             AT,
+            &CFG,
         );
         assert_eq!(split.err(), Some(Error::BadWords));
         // A live invitation never meets an appointment, even with the same context.
         let live = live(WORDS);
-        assert_eq!(complete(&live, &a).err(), Some(Error::Rejected));
+        assert_eq!(complete(&live, &a, c(NOW)).err(), Some(Error::Rejected));
     }
 
     #[test]
@@ -1032,7 +1290,8 @@ mod tests {
             appointment("zoo zoo zoo zoo", AT, AT).unwrap().rendezvous(),
             id
         );
-        let other_a = Invitation::appointment("alpha cable echo forest zoo", WORDS_B, AT, CTX, AT);
+        let other_a =
+            Invitation::appointment("alpha cable echo forest zoo", WORDS_B, AT, CTX, AT, &CFG);
         assert_ne!(other_a.unwrap().rendezvous(), id);
         assert_eq!(
             appointment("velvet stone happy", AT, AT).err(),
@@ -1042,47 +1301,62 @@ mod tests {
 
     #[test]
     fn a_physical_token_works_until_it_expires() {
-        let token = new_physical_token(3600, AT);
-        assert_eq!(&token[TOKEN_SECRET_LEN..], &(AT + 3600).to_be_bytes());
-        let a = Invitation::physical_token(WORDS, &token, CTX, AT).unwrap();
-        let b = Invitation::physical_token(WORDS, &token, CTX, AT + 3600).unwrap();
+        let secret = new_physical_token(3600, AT).unwrap();
+        assert_eq!(&secret[TOKEN_SECRET_LEN..], &(AT + 3600).to_be_bytes());
+        let a = token(WORDS, &secret, AT).unwrap();
+        let b = token(WORDS, &secret, AT + 3600).unwrap();
         assert_eq!(a.rendezvous(), b.rendezvous());
         // B read the token and starts; A only answers.
-        let (b, a) = complete(&b, &a).unwrap();
+        let (b, a) = complete(&b, &a, wall(AT + 3600)).unwrap();
         assert_eq!(a.key(), b.key());
         assert_eq!((b.peer_payload(), a.peer_payload()), (PB, PA));
 
+        assert_eq!(token(WORDS, &secret, AT + 3601).err(), Some(Error::Expired));
+        // A step started near expiry dies with the token.
+        let late = token(WORDS, &secret, AT + 3598).unwrap();
+        let (a, _) = Initiator::start(&late, PA, wall(AT + 3598)).unwrap();
+        assert_eq!(a.deadline(), NOW + 2);
+    }
+
+    #[test]
+    fn a_physical_token_lives_exactly_its_lifetime() {
+        let secret = new_physical_token(90 * DAY, AT).unwrap();
+        let invitation = token(WORDS, &secret, AT).unwrap();
+        // Kept in memory since day 0, it still completes on day 89...
+        assert!(complete(&invitation, &invitation, wall(AT + 89 * DAY)).is_ok());
+        // ...and no longer once the token has expired.
         assert_eq!(
-            Invitation::physical_token(WORDS, &token, CTX, AT + 3601).err(),
+            complete(&invitation, &invitation, wall(AT + 90 * DAY + 1)).err(),
             Some(Error::Expired)
         );
-        // A step started near expiry dies with the token.
-        let late = Invitation::physical_token(WORDS, &token, CTX, AT + 3598).unwrap();
+        assert!(new_physical_token(u64::MAX - AT, AT).is_ok());
         assert_eq!(
-            Initiator::start(&late, PA, NOW).unwrap().0.deadline(),
-            NOW + 2
+            new_physical_token(u64::MAX, AT).err(),
+            Some(Error::OutOfRange)
         );
     }
 
     #[test]
     fn a_physical_token_needs_the_words_too() {
-        let token = new_physical_token(3600, AT);
-        let a = Invitation::physical_token(WORDS, &token, CTX, AT).unwrap();
-        let other_token =
-            Invitation::physical_token(WORDS, &new_physical_token(3600, AT), CTX, AT).unwrap();
+        let secret = new_physical_token(3600, AT).unwrap();
+        let a = token(WORDS, &secret, AT).unwrap();
+        let other_token = token(WORDS, &new_physical_token(3600, AT).unwrap(), AT).unwrap();
         assert_ne!(a.rendezvous(), other_token.rendezvous());
-        assert_eq!(complete(&other_token, &a).err(), Some(Error::Rejected));
-        let wrong_words = Invitation::physical_token(WRONG, &token, CTX, AT).unwrap();
-        assert_eq!(a.rendezvous(), wrong_words.rendezvous());
-        assert_eq!(complete(&wrong_words, &a).err(), Some(Error::Rejected));
-        // A token whose expiry was rewritten is another token.
-        let mut moved = *token;
-        moved[TOKEN_LEN - 1] ^= 1;
-        let moved = Invitation::physical_token(WORDS, &moved, CTX, AT).unwrap();
-        assert_eq!(complete(&moved, &a).err(), Some(Error::Rejected));
         assert_eq!(
-            Invitation::physical_token("alpha", &token, CTX, AT).err(),
-            Some(Error::BadWords)
+            complete(&other_token, &a, c(NOW)).err(),
+            Some(Error::Rejected)
         );
+        let wrong_words = token(WRONG, &secret, AT).unwrap();
+        assert_eq!(a.rendezvous(), wrong_words.rendezvous());
+        assert_eq!(
+            complete(&wrong_words, &a, c(NOW)).err(),
+            Some(Error::Rejected)
+        );
+        // A token whose expiry was rewritten is another token.
+        let mut moved = *secret;
+        moved[TOKEN_LEN - 1] ^= 1;
+        let moved = token(WORDS, &moved, AT).unwrap();
+        assert_eq!(complete(&moved, &a, c(NOW)).err(), Some(Error::Rejected));
+        assert_eq!(token("alpha", &secret, AT).err(), Some(Error::BadWords));
     }
 }

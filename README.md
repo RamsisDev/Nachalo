@@ -40,7 +40,7 @@ channel.
 | Mode | The people swap | They connect | Read more |
 | --- | --- | --- | --- |
 | **Live** | 6 words | Within minutes | [docs/live.md](docs/live.md) |
-| **Appointment** | 5 words one way, 4 the other, and a start time | In a 30-minute window at that time, then never again | [docs/appointment.md](docs/appointment.md) |
+| **Appointment** | 5 words one way, 4 the other, and a start time | In a window at that time (30 minutes by default), then never again | [docs/appointment.md](docs/appointment.md) |
 | **Physical token** | A token handed over in person, and 6 words | Any time before the token expires | [docs/physical-token.md](docs/physical-token.md) |
 
 The handshake combines CPace ([draft-irtf-cfrg-cpace], suite CPACE-RISTR255-SHA512), X25519 and
@@ -52,9 +52,9 @@ choose a mode.
 
 | Property | Guarantee |
 | --- | --- |
-| Guessing the words | Online only: each guess needs a live exchange with a victim, and answers per invitation are capped. An appointment is only valid for its 30 minutes; a physical-token invitation needs the token. |
+| Guessing the words | Online only: each guess needs a live exchange with a victim, and answers per invitation are capped. An appointment is only valid during its window; a physical-token invitation needs the token. |
 | Key secrecy | Holds against a passive attacker with a future quantum computer (ML-KEM-768). |
-| Man in the middle who knows the words | Detected by the safety words with probability at least 1 - 2^-38 per attempt. |
+| Man in the middle who knows the words | Detected by the safety words with probability at least 1 - 2^-38 per attempt, with the default limits. |
 | Forward secrecy | Every key is ephemeral; learning the words afterwards does not reveal the key. |
 | Metadata | No identifiers, accounts or timestamps on the wire. Message lengths reveal payload lengths. |
 
@@ -91,24 +91,27 @@ nachalo = { git = "https://github.com/RamsisDev/Nachalo" }
 A live first contact, with both sides in one process:
 
 ```rust
-use nachalo::{Initiator, Invitation, Responder, words};
+use nachalo::{Clock, Config, Initiator, Invitation, Listener, words};
 
 fn main() -> Result<(), nachalo::Error> {
     let context = b"my-app v1"; // equal on both sides, never sent
-    let now = 0; // seconds, from each device's own monotonic clock
+    let config = Config::default(); // local limits; each side may pick its own
+    // Each device's monotonic seconds and wall-clock Unix seconds, read before every step.
+    let clock = Clock { now: 0, now_unix: 1_900_000_000 };
 
     let words = words(6); // A's device draws them, and A gives them to B
-    let invitation = Invitation::live(&words, context)?; // both sides build it
+    let invitation = Invitation::live(&words, context, &config)?; // both sides build it
 
-    // A posts msg1 at invitation.rendezvous(); B finds it there and answers.
-    let (mut a, msg1) = Initiator::start(&invitation, b"A's payload", now)?;
-    let (b, msg2) = Responder::respond(&invitation, &msg1, b"B's payload", now)?;
-    let (a, msg3) = a.finish(&msg2, now)?;
-    let b = b.finish(&msg3, now)?;
+    // A posts msg1 at invitation.rendezvous(); B listens there and answers.
+    let (mut a, msg1) = Initiator::start(&invitation, b"A's payload", clock)?;
+    let mut listener = Listener::new(&invitation);
+    let (b, msg2) = listener.respond(&msg1, b"B's payload", clock)?;
+    let (a, msg3) = a.finish(&msg2, clock)?;
+    let b = b.finish(&msg3, clock)?;
 
     // B reads out b.safety_words(), A types them, and B confirms once A says they matched.
-    let a = a.verify(&b.safety_words(), now)?;
-    let b = b.confirm(now)?;
+    let a = a.verify(&b.safety_words(), clock)?;
+    let b = b.confirm(clock)?;
 
     assert_eq!(a.key(), b.key());
     assert_eq!(a.peer_payload(), b"B's payload");
@@ -117,22 +120,26 @@ fn main() -> Result<(), nachalo::Error> {
 ```
 
 The other modes only change how the invitation is built:
-`Invitation::appointment(words_a, words_b, at, context, now_unix)` and
-`Invitation::physical_token(words, token, context, now_unix)`. Each page in [docs/](docs/README.md)
-has a full example.
+`Invitation::appointment(words_a, words_b, at, context, now_unix, &config)` and
+`Invitation::physical_token(words, token, context, now_unix, &config)`. Each page in
+[docs/](docs/README.md) has a full example.
 
 The application provides:
 
 - **Transport.** The initiator posts msg1 at the 32-byte `rendezvous` id; the application decides
   where msg2 and msg3 travel.
-- **Clock.** `now` is in seconds, from a monotonic clock that keeps counting while the device
-  sleeps. Each pending step expires after 10 minutes on its own device, or sooner at the end of an
-  appointment or when a token expires. Building an appointment or physical-token invitation also
-  takes `now_unix`, the wall clock, to check its window.
+- **Clocks.** Every step takes a `Clock`: `now`, seconds from a monotonic clock that keeps
+  counting while the device sleeps, and `now_unix`, the wall clock. Each pending step expires
+  after its `invite_ttl` (10 minutes by default) on its own device, or sooner at the end of an
+  appointment or when a token expires; the wall clock is checked at every step.
+- **Limits.** `Config::new(&Profile::INTERACTIVE)` (the default), `PQ_MESSENGER` (payloads up to
+  8 KiB, for post-quantum keys and signatures) or `NEARBY` (short TTL, few answers), each tunable
+  within its ranges. Limits are local, so devices with different ones still connect, and every
+  receiver accepts payloads up to `PAYLOAD_CEILING` (8 KiB).
 - **The physical token.** `new_physical_token(lifetime, now_unix)` returns the 40 bytes to hand
   over; the maker keeps a copy and erases it once it expires.
-- **A cap on answers.** The responder should answer at most `MAX_ANSWERS` msg1 per invitation.
-  The initiator enforces its own cap.
+- **One `Listener` per invitation** on the responder, which stops after `max_answers` msg1. The
+  initiator enforces its own cap.
 - **The user interface** for entering the words and comparing the safety words.
 
 ## Development

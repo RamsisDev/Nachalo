@@ -6,11 +6,11 @@
 //!
 //! - [`Invitation::live`]: A draws 6 [`words`] and both devices take part within minutes;
 //! - [`Invitation::appointment`]: A draws 5 words, B draws 4, and they agree on a time; the
-//!   invitation only works for 30 minutes from then;
+//!   invitation only works for a window from then, 30 minutes by default;
 //! - [`Invitation::physical_token`]: A hands B in person a [`new_physical_token`], which B's
 //!   device reads, and gives B 6 words.
 //!
-//! In three messages ([`Initiator`] and [`Responder`]) both reach a shared key and swap one
+//! In three messages ([`Initiator`], and [`Listener`] on the other side) both reach a shared key and swap one
 //! opaque payload each way, such as the first key of a ratchet or the read capability of a
 //! channel. B then shows 4 safety words that A types, so even someone who intercepted the words
 //! cannot sit in the middle unnoticed.
@@ -21,30 +21,33 @@
 //! all three, quantum computers included. The protocol is defined by its specification,
 //! `spec/nachalo.md` in the repository, not by this crate.
 //!
-//! Handshake steps take `now` in seconds and only differences on the same device matter: no time
-//! travels on the wire and no two clocks are compared. Pass a monotonic clock that keeps counting
-//! while the device sleeps, never the wall clock. Only building an appointment or physical-token
-//! invitation reads the wall clock, to check its window.
+//! Every step takes a [`Clock`]: `now`, monotonic seconds that keep counting while the device
+//! sleeps, for each step's TTL, and `now_unix`, the wall clock, for the window of an appointment
+//! or physical token. No time travels on the wire and no two devices' clocks are compared.
+//!
+//! The limits (TTL, answers, payload size, appointment window) are local: each device picks a
+//! [`Config`] from a [`Profile`], and devices with different ones still interoperate. Every
+//! receiver accepts payloads up to [`PAYLOAD_CEILING`].
 //!
 //! ```
-//! use nachalo::{Initiator, Invitation, Responder, words};
+//! use nachalo::{Clock, Config, Initiator, Invitation, Listener, words};
 //! # fn main() -> Result<(), nachalo::Error> {
-//! # let now = 0;
+//! # let clock = Clock { now: 0, now_unix: 1_900_000_000 };
 //! let context = b"my-app v1";
 //! let words = words(6); // A gives these to B outside the protocol
-//! let invitation = Invitation::live(&words, context)?; // both sides build it
+//! let invitation = Invitation::live(&words, context, &Config::default())?; // both sides build it
 //!
 //! // A posts msg1 at invitation.rendezvous()
-//! let (mut a, msg1) = Initiator::start(&invitation, b"A's payload", now)?;
-//! // B finds it there and answers
-//! let (b, msg2) = Responder::respond(&invitation, &msg1, b"B's payload", now)?;
-//! let (a, msg3) = a.finish(&msg2, now)?;
-//! let b = b.finish(&msg3, now)?;
+//! let (mut a, msg1) = Initiator::start(&invitation, b"A's payload", clock)?;
+//! // B listens there and answers
+//! let (b, msg2) = Listener::new(&invitation).respond(&msg1, b"B's payload", clock)?;
+//! let (a, msg3) = a.finish(&msg2, clock)?;
+//! let b = b.finish(&msg3, clock)?;
 //!
 //! // B shows b.safety_words(); A's user types them
 //! # let typed_by_a = b.safety_words();
-//! let a = a.verify(&typed_by_a, now)?;
-//! let b = b.confirm(now)?; // once A says they matched
+//! let a = a.verify(&typed_by_a, clock)?;
+//! let b = b.confirm(clock)?; // once A says they matched
 //! assert_eq!(a.key(), b.key());
 //! assert_eq!(a.peer_payload(), b"B's payload");
 //! # assert_eq!(invitation.rendezvous().len(), 32);
@@ -52,16 +55,18 @@
 //! # }
 //! ```
 
+mod config;
 mod cpace;
 mod crypto;
 mod handshake;
 mod words;
 
+pub use config::{Bounded, Config, Profile};
 pub use crypto::Key;
 pub use handshake::{
-    APPOINTMENT_WINDOW, Error, Established, INVITE_TTL, Initiator, Invitation, MAX_ANSWERS,
-    MAX_PAYLOAD, MSG1_LEN, PROTOCOL, RENDEZVOUS_LEN, Responder, Role, SAFETY_LEN, TOKEN_LEN,
-    Unconfirmed, msg2_len, msg3_len, new_physical_token,
+    Clock, Error, Established, Initiator, Invitation, Listener, MSG1_LEN, PAYLOAD_CEILING,
+    PROTOCOL, RENDEZVOUS_LEN, Responder, Role, SAFETY_LEN, TOKEN_LEN, Unconfirmed, msg2_len,
+    msg3_len, new_physical_token,
 };
 pub use words::{APPOINTMENT_WORDS_A, APPOINTMENT_WORDS_B, WORD_COUNT, words};
 

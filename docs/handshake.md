@@ -70,9 +70,11 @@ Breaking the key requires breaking all three.
 
 ## Payloads
 
-Each side sends one opaque payload of up to 1024 bytes, possibly empty: the first public key of a
-ratchet, the read capability of a channel, a long-term identity key. Nachalo does not look inside
-it.
+Each side sends one opaque payload, possibly empty: the first public key of a ratchet, the read
+capability of a channel, a long-term identity key. Nachalo does not look inside it. Each device
+limits what it sends with its own `max_payload` (1 KiB by default, up to 8 KiB in the
+`PQ_MESSENGER` profile), and every device accepts payloads up to 8 KiB, so two devices with
+different limits still connect.
 
 Payloads are confidential against anyone who does not know the invitation. They are only
 *authenticated* once the safety words match: until then, the other side might be someone who
@@ -88,8 +90,8 @@ A posing as B and another with B posing as A. Both complete.
 The safety words catch that. They are 4 words (44 bits) derived from the whole transcript, so the
 two sessions of a man in the middle show different words, except by chance. A commits to a
 random nonce in msg1 and reveals it only in msg3, so the attacker cannot steer the words toward a
-collision. With B answering at most 64 msg1 per invitation, an attacker goes unnoticed with
-probability at most 2^-38.
+collision. With B answering at most `max_answers` msg1 per invitation, an attacker goes unnoticed
+with probability at most `max_answers / 2^44`: 2^-38 with the default of 64.
 
 The safety words are not secret, but they must be compared over a channel where the two people
 recognize each other: face to face, on a voice or video call. Comparing them over the same channel
@@ -107,26 +109,37 @@ handshake carried**, treat both payloads as known to the attacker, and start ove
 
 ## Time and limits
 
-| Limit | Value | What happens |
-| --- | --- | --- |
-| Pending step lifetime | 10 minutes, or less at the end of an appointment or before a token expires | Each side's step expires on its own device's clock. Safety words included, the whole handshake must finish by then. |
-| Wrong msg2 per initiator | 64 | A gives up on the invitation. Each wrong msg2 is someone's online guess at the words. |
-| msg1 answered per responder | 64, recommended | Enforced by the application. Bounds online guessing against B and the man-in-the-middle chance above. |
-| Payload size | 1024 bytes | Larger payloads are rejected. |
+Every limit is local: each device picks its own, they never travel on the wire, and two devices
+with different limits still connect. The reference implementation groups them in profiles with
+allowed ranges (`Config::new(&Profile::...)`).
 
-The handshake takes `now` in seconds from a **monotonic clock that keeps counting while the
-device sleeps**. Only differences on the same device matter, so the two devices' clocks never need
-to agree. Never pass the wall clock, which the network can move. The appointment and
-physical-token modes also read the wall clock, once, when the invitation is built, to check its
-window.
+| Limit | Default (`INTERACTIVE`) | What happens |
+| --- | --- | --- |
+| `invite_ttl`, pending step lifetime | 10 minutes, or less at the end of an appointment or before a token expires | Each side's step expires on its own device's clock. Safety words included, the whole handshake must finish by then. |
+| `max_answers`, wrong msg2 per initiator | 64 | A gives up on the invitation. Each wrong msg2 is someone's online guess at the words. |
+| `max_answers`, msg1 answered per responder | 64 | Enforced by the `Listener`. Bounds online guessing against B and the man-in-the-middle chance above. |
+| `max_payload`, payload sent | 1 KiB | Larger payloads are refused before anything is sent. Every receiver accepts up to 8 KiB. |
+| `appointment_window` | 30 minutes | See [appointment](appointment.md). |
+
+| Profile | For | Differs from `INTERACTIVE` |
+| --- | --- | --- |
+| `INTERACTIVE` | Chat or call, both online | |
+| `PQ_MESSENGER` | First key of a post-quantum ratchet plus an identity | Sends 4 KiB by default, up to 8 KiB |
+| `NEARBY` | QR, Bluetooth or LAN, side by side | 2-minute TTL, 4 answers (2^-40 per side), payload up to 8 KiB |
+
+Every step takes two clocks. `now` is in seconds from a **monotonic clock that keeps counting
+while the device sleeps**, for the step's TTL; only differences on the same device matter, so the
+two devices' clocks never need to agree. `now_unix` is the wall clock: the appointment and
+physical-token modes check it at every step, so an invitation kept in memory stops working when
+its window closes or its token expires.
 
 ## What the application provides
 
 Nachalo is sans-IO: it takes bytes in and returns bytes out. The application provides:
 
 - **the transport** for the three messages, starting from the rendezvous id;
-- **the clocks**, monotonic for the handshake and wall clock to build time-bound invitations;
-- **the cap** on msg1 answered per invitation, on the responder;
+- **the clocks**, monotonic for each step's TTL and wall clock for time-bound invitations;
+- **its limits**, a `Config`, and one `Listener` per invitation on the responder;
 - **the user interface** to enter words and compare safety words;
 - **what to do with the result**: derive its own keys with `Established::export(label)`, use
   `Established::transcript()` for channel binding, and treat the peer's payload as authenticated.
@@ -139,7 +152,8 @@ Nachalo is sans-IO: it takes bytes in and returns bytes out. The application pro
 - It does not authenticate people. It authenticates one session, through the invitation and the
   safety words. Long-term identity is built on top, for example by sending identity keys as
   payloads.
-- It does not cover groups, or two devices that are never online within 10 minutes of each other.
+- It does not cover groups, or two devices that are never online within `invite_ttl` of each
+  other.
 
 The full threat model is in [section 11 of the specification](../spec/nachalo.md#11-security-considerations).
 
