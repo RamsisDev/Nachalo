@@ -8,20 +8,27 @@ notice; the first stable version will be `v1`.
 ## 1. Introduction
 
 Nachalo ("beginning") is a three-message handshake for first contact between two people who
-share nothing but 6 words. One person, the initiator A, draws 6 random words and gives them to
-the other, the responder B, outside the system: spoken, written down or over another app. With
-those words alone, the two devices:
+share nothing but a few words. The two people set up an invitation outside the system (spoken,
+written down or over another app) in one of three modes (section 6):
+
+- **live**: A draws 6 random words and gives them to B; both devices take part within minutes;
+- **appointment**: A draws 5 words and B draws 4, they swap them and agree on a start time; the
+  invitation works for 30 minutes from then and never again;
+- **physical token**: A hands B in person a token holding a random secret and an expiry, which
+  B's device reads, and gives B 6 words.
+
+With that alone, the two devices:
 
 - agree on a shared key that a network attacker cannot learn, even with a quantum computer later
   (CPace + X25519 + ML-KEM-768);
 - swap one opaque payload each way, such as the first public key of a ratchet or the read
   capability of a channel;
-- catch an attacker who learned the 6 words and sits in the middle: B shows 4 safety words and A
+- catch an attacker who learned the words and sits in the middle: B shows 4 safety words and A
   types them.
 
-Nachalo is a protocol, not a library. This document is its definition; the Rust crate in the same
-repository is a reference implementation, and `vectors/v0.json` lets any other implementation
-check itself byte by byte.
+Nachalo is a protocol, not a library. This document defines it, and `vectors/` lets any
+implementation check itself byte by byte. The Rust crate in the same repository is a reference
+implementation; where it and this document differ, this document wins.
 
 ### 1.1. Goals
 
@@ -39,8 +46,10 @@ check itself byte by byte.
   payloads and wrap the messages in their own fixed-size frames.
 - Long-term identity. Nachalo authenticates a session with the words and the safety words, not a
   person. Applications build identity on top, for example by sending long-term keys as payloads.
-- Group or asynchronous first contact. Both devices take part within the invitation lifetime
-  (`INVITE_TTL`, 10 minutes). Section 11.7 discusses this.
+- Group first contact.
+- Fully asynchronous first contact. Both devices take part within `INVITE_TTL` (10 minutes) of
+  each other, at a time the people agreed on (appointment) or while the physical token is valid.
+  Section 11.7 discusses this.
 
 ## 2. Notation
 
@@ -67,10 +76,14 @@ check itself byte by byte.
 | Name | Value | Meaning |
 | --- | --- | --- |
 | `PROTOCOL` | `"Nachalo v0"` | Domain separation; changes with every incompatible version |
-| `INVITE_TTL` | 600 seconds | Lifetime of each side's pending step |
+| `INVITE_TTL` | 600 seconds | Longest lifetime of each side's pending step |
 | `MAX_ANSWERS` | 64 | Wrong msg2 an initiator accepts before it gives up |
 | `MAX_PAYLOAD` | 1024 bytes | Largest payload either side may send |
-| `WORD_COUNT` | 6 | Invitation words, 66 bits |
+| `WORD_COUNT` | 6 | Words of a live or physical-token invitation, 66 bits |
+| `APPOINTMENT_WORDS_A` | 5 | Words A draws for an appointment, 55 bits |
+| `APPOINTMENT_WORDS_B` | 4 | Words B draws for an appointment, 44 bits |
+| `APPOINTMENT_WINDOW` | 1800 seconds | How long an appointment can be answered |
+| `TOKEN_LEN` | 40 bytes | Physical token: 32-byte secret, 8-byte expiry |
 | `SAFETY_LEN` | 8 bytes | Safety words: 4 words, 44 bits |
 
 CPace suite: **CPACE-RISTR255-SHA512** from [CPACE], in the initiator-responder setting
@@ -88,10 +101,13 @@ Labels, used as HKDF `info` or inside hashes:
 | `L_KEY` | `"Nachalo v0 key"` |
 | `L_SAFETY` | `"Nachalo v0 safety"` |
 | `L_EXPORT` | `"Nachalo v0 export"` |
+| `L_APPOINTMENT` | `"Nachalo v0 appointment"` |
+| `L_TOKEN` | `"Nachalo v0 physical token"` |
 
 ## 4. Inputs
 
-- `words`: the 6 invitation words (section 5).
+- The invitation: the words of its mode (section 5), plus the start time `at` of an appointment
+  or the `token` of a physical-token invitation (section 6).
 - `context`: a byte string the application chooses, equal on both sides, such as the name and
   version of the application and of the network it runs on. It never travels on the wire.
   Devices with different contexts never complete a handshake.
@@ -99,6 +115,13 @@ Labels, used as HKDF `info` or inside hashes:
 - `now`: seconds on a clock of the device itself. Only differences on one device matter. It
   should be a monotonic clock that keeps counting while the device sleeps, never the wall clock,
   which the network can move.
+- `now_unix`: the device's wall clock, in seconds since the Unix epoch. Only appointment and
+  physical-token invitations use it, once, when the invitation is built (section 6).
+
+In what follows, A is the initiator, which sends msg1 and msg3, and B the responder. In the live
+and appointment modes A is the person who drew the first words; in the physical-token mode the
+roles are swapped: the person who received the token starts the handshake, and the person who
+made it answers.
 
 ## 5. Words
 
@@ -116,37 +139,100 @@ gives the word at index `pair & 0x7ff`. The words are joined by single spaces (0
 
 ### 5.3. Invitation words
 
-A draws `to_words(random(12))`: 6 words, 66 bits. People must never choose the words themselves,
-since chosen words are far easier to guess.
+`n` invitation words are `to_words(random(2n))`, `11n` bits. A live or physical-token invitation
+has `WORD_COUNT` words, drawn by the person who sets it up. An appointment has two groups:
+`APPOINTMENT_WORDS_A` drawn by A and `APPOINTMENT_WORDS_B` drawn by B. People must never choose
+the words themselves, since chosen words are far easier to guess.
 
 ### 5.4. Normalization
 
 Before any use, words typed by a person are normalized: lowercase, split on whitespace, rejoined
-with single spaces. The result must be exactly 6 words from the list; otherwise the input is
-rejected. The normalized words, as bytes, are `PRS`, the CPace password.
+with single spaces. The result must be exactly the number of words of its group, all from the
+list; otherwise the input is rejected. Section 6 turns the normalized words, as bytes, into
+`PRS`, the CPace password.
 
 ### 5.5. Comparing safety words
 
 Typed safety words match when, lowercased and split on whitespace, they equal the 4 words of
 `to_words(safety)` in order.
 
-## 6. Rendezvous
+## 6. Invitations
 
-The two devices must find each other's messages without any identifier. A posts msg1 at a public
-rendezvous id that B computes from the same words and context:
+An invitation gives both devices four values: `PRS`, the CPace password; `CI`, the CPace channel
+identifier; `rendezvous`, a public 32-byte id; and `ttl`, how long a step started from it may
+stay pending. Both sides compute them from the same inputs; the handshake (section 7) is the same
+in every mode.
+
+The two devices must find each other's messages without any identifier. A posts msg1 at
+`rendezvous` and B looks for it there. The application maps the 32-byte id onto its transport: a
+mailbox queue, a storage address, a topic, truncating it if needed. Unrelated invitations
+sometimes share an id: B answers every msg1 it finds there, up to a cap (section 10). Replies
+(msg2, msg3) travel wherever the application decides, for example to an id derived from the
+previous message. This specification leaves that to the application.
+
+### 6.1. Live
+
+With `words` the normalized 6 words:
 
 ```text
+PRS = words
+CI  = lv_cat(PROTOCOL, context)
 tag = HKDF(salt = context, ikm = PRS, info = L_RV_TAG, 3)
 rendezvous = HKDF(salt = context, ikm = tag, info = L_RV, 32)
+ttl = INVITE_TTL
 ```
 
-The application maps the 32-byte id onto its transport: a mailbox queue, a storage address, a
-topic, truncating it if needed. Since only 24 bits of the words go in, anyone watching the id
-learns at most those 24 bits, and unrelated invitations sometimes share an id: B answers every
-msg1 it finds there, up to a cap (section 10).
+Since only 24 bits of the words go into the id, anyone watching it learns at most those 24 bits.
 
-Replies (msg2, msg3) travel wherever the application decides, for example to an id derived from
-the previous message. This specification leaves that to the application.
+### 6.2. Appointment
+
+A draws 5 words, `words_a`, and B draws 4, `words_b`. The two people swap them, along with `at`:
+the agreed start time, as seconds since the Unix epoch, which both devices must pass identically
+(applications should round it to the minute). With `words_a` and `words_b` normalized and
+`be64(x)` the 8-byte big-endian encoding of `x`:
+
+```text
+end = at + APPOINTMENT_WINDOW
+PRS = lv_cat(words_a, words_b)
+CI  = lv_cat(PROTOCOL, context, L_APPOINTMENT, be64(at))
+tag = HKDF(salt = CI, ikm = words_a, info = L_RV_TAG, 2)
+rendezvous = HKDF(salt = CI, ikm = tag, info = L_RV, 32)
+ttl = min(INVITE_TTL, end - now_unix)
+```
+
+A device rejects the invitation unless `at <= now_unix <= end`. Because `ttl` stops at `end`, the
+whole handshake, safety words included, must end within the window. After that, the invitation
+is useless twice over: no device builds it, and since `at` is part of `CI`, messages from one
+appointment never complete with an invitation for another time, even with the same words.
+
+Only `words_a` go into the rendezvous id, through 16 bits, so watching the id reveals nothing
+about `words_b`. Each start time has its own ids, so 16 bits are enough to keep unrelated
+invitations apart.
+
+### 6.3. Physical token
+
+A, the person setting up the invitation, makes a physical token: these bytes, on something A
+hands B in person and B's device can read:
+
+```text
+token = random(32) || be64(now_unix + lifetime)        TOKEN_LEN bytes
+```
+
+A also gives B 6 words another way. A keeps a copy of the token to build its own invitation, and
+erases it once it expires. The last 8 bytes, `expires`, are the last second the token is valid.
+With `words` the normalized 6 words:
+
+```text
+PRS = lv_cat(words, token)
+CI  = lv_cat(PROTOCOL, context, L_TOKEN)
+rendezvous = HKDF(salt = CI, ikm = token, info = L_RV, 32)
+ttl = min(INVITE_TTL, expires - now_unix)
+```
+
+A device rejects the invitation if `now_unix > expires`. B, who received the token, is the
+initiator: it posts msg1 at the rendezvous and A only has to look there and answer. The rendezvous
+id comes from the 32-byte secret, so nobody without the token can find or recognize it. The expiry
+is part of `PRS`, so a token whose expiry was rewritten is another token and never completes.
 
 ## 7. Messages
 
@@ -162,14 +248,13 @@ length is not one of the lengths allowed for payloads from 0 to `MAX_PAYLOAD` by
 Shared definitions:
 
 ```text
-CI = lv_cat(PROTOCOL, context)                      CPace channel identifier
 T(m1, ..., mk) = SHA256(lv_cat(PROTOCOL, m1, ..., mk))   transcript hash
 ikm = ISK || ss_x || ss_kem                          128 bytes
 ```
 
 ### 7.1. A: msg1
 
-1. Normalize the words into `PRS` (section 5.4). Reject payloads over `MAX_PAYLOAD`.
+1. Build the invitation (section 6). Reject payloads over `MAX_PAYLOAD`.
 2. Draw:
    - `sid = random(16)`;
    - `ya`: CPace `sample_scalar()`, from `random(32)` with the top 4 bits of the last byte cleared,
@@ -181,11 +266,11 @@ ikm = ISK || ss_x || ss_kem                          128 bytes
 4. `Ya = scalar_mult(ya, g)`, `Xa = X25519(xa, 9)`.
 5. `commitment = SHA256(lv_cat(L_COMMIT, nonce, payload_a))`.
 6. `msg1 = sid || Ya || Xa || commitment || ek`. Send it to the rendezvous id. Record
-   `started = now` and `answers = 0`.
+   `deadline = now + ttl` and `answers = 0`.
 
 ### 7.2. B: msg2
 
-1. Normalize the words. Reject payloads over `MAX_PAYLOAD`. Reject msg1 unless it is exactly 1296
+1. Build the invitation. Reject payloads over `MAX_PAYLOAD`. Reject msg1 unless it is exactly 1296
    bytes, and unless `ek` passes the FIPS 203 encapsulation key check.
 2. Draw `yb` (as `ya`), `xb = random(32)` and `m = random(32)`.
 3. `g = calculate_generator(SHA-512, PRS, CI, sid)`, `Yb = scalar_mult(yb, g)`,
@@ -199,7 +284,7 @@ ikm = ISK || ss_x || ss_kem                          128 bytes
    - `ISK = SHA-512(lv_cat("CPaceRistretto255_ISK", sid, K) || transcript_ir(Ya, ADa, Yb, ADb))`.
 7. `prefix = Yb || Xb || ct`, `key_b = HKDF(T(msg1, prefix), ikm, L_SEAL_B, 32)`.
 8. `msg2 = prefix || Seal(key_b, payload_b)`. Send it to A. Keep `ikm`, msg1, msg2 and
-   `commitment`, and record `started = now`.
+   `commitment`, and record `deadline = now + ttl`.
 
 Every random value is drawn fresh for each msg1 answered.
 
@@ -207,7 +292,7 @@ Every random value is drawn fresh for each msg1 answered.
 
 On each candidate msg2:
 
-1. If A has already finished, `answers >= MAX_ANSWERS`, or `now > started + INVITE_TTL`, the
+1. If A has already finished, `answers >= MAX_ANSWERS`, or `now > deadline`, the
    invitation is dead: stop.
 2. Check the length. Split msg2 into `Yb`, `Xb`, `ct` and `sealed_b`.
 3. Compute `ISK` as B did, with `K = scalar_mult_vfy(ya, Yb)`, rejecting the same cases.
@@ -222,7 +307,7 @@ On each candidate msg2:
 
 On each candidate msg3:
 
-1. If `now > started + INVITE_TTL`, stop.
+1. If `now > deadline`, stop.
 2. Check the length. `nonce || payload_a = Open(HKDF(T(msg1, msg2), ikm, L_SEAL_A, 32), msg3)`.
 3. Check, in constant time, that `SHA256(lv_cat(L_COMMIT, nonce, payload_a)) = commitment`.
 4. If a step failed, keep waiting: a forged msg3 reveals nothing about the words. Otherwise go to
@@ -246,7 +331,7 @@ secret. A types the words B reads out, and A's device accepts them only if they 
 Until then, an implementation:
 
 - must not release the peer's payload or `key` to the application;
-- keeps the session pending until `started + INVITE_TTL`; a typo leaves it pending, so the user
+- keeps the session pending until `deadline`; a typo leaves it pending, so the user
   can try again. If the words really differ, someone sat in the middle: abort, and treat both
   payloads as known to the attacker.
 
@@ -278,11 +363,12 @@ sent) and starts over with new words.
 - A takes at most `MAX_ANSWERS` wrong msg2 per invitation.
 - B answers every msg1 at the rendezvous, since unrelated invitations can share it and B cannot
   tell its peer's apart before the handshake ends. Each answer is one online guess for whoever
-  sent that msg1, so B should cap how many msg1 it answers per invitation; this implementation
-  recommends `MAX_ANSWERS` as well. The same cap bounds a man in the middle's chance of matching
-  the safety words (section 11.3).
-- Each pending step dies `INVITE_TTL` after it started, on its own device's clock. No time travels
-  on the wire, so the two clocks never need to agree.
+  sent that msg1, so B should answer at most `MAX_ANSWERS` msg1 per invitation. The same cap
+  bounds a man in the middle's chance of matching the safety words (section 11.3).
+- Each pending step dies `ttl` after it started, on its own device's clock: `INVITE_TTL`, or less
+  near the end of an appointment window or before a token expires. No time travels on the wire,
+  so the two clocks never need to agree; only the appointment and physical-token modes read the
+  wall clock, once, when the invitation is built.
 
 ## 11. Security considerations
 
@@ -290,16 +376,32 @@ sent) and starts over with new words.
 
 The attacker controls the network: it reads, drops, delays, replays, and forges messages, and it
 can run as many sessions as it likes. It may later have a quantum computer. It may also learn the
-6 words, for example by reading the message they were sent in. It does not control the channel
-where the safety words are compared: the two people recognize each other there.
+invitation words, or read the physical token, for example by reading the message they were sent
+in. It does not control the channel where the safety words are compared: the two people recognize
+each other there.
 
 ### 11.2. Guessing the words
 
-The words are a 66-bit secret. CPace [CPACE] makes every guess an online one: a transcript, passive
-or from a failed active session, does not let an attacker test guesses offline. The rendezvous
-reveals at most 24 bits, leaving 42. An attacker that answers A's msg1 gets one guess per msg2,
-and A takes at most 64, so one invitation is broken this way with probability at most
-2^6 / 2^42 = 2^-36. The same bound holds for msg1 sent to B, with B's cap.
+CPace [CPACE] makes every guess an online one: a transcript, passive or from a failed active
+session, does not let an attacker test guesses offline. The only offline test is the rendezvous id,
+and it depends on a few bits only. An attacker that answers A's msg1 gets one guess per msg2, and A
+takes at most 64; the same holds for msg1 sent to B, with B's cap. Per side and per invitation, an
+attacker breaks it with probability at most `2^6 / 2^r`, where `r` is what the rendezvous leaves of
+the secret:
+
+| Mode | Secret | Rendezvous reveals | `r` | Per side |
+| --- | --- | --- | --- | --- |
+| Live | 66 bits | 24 bits | 42 | 2^-36 |
+| Appointment | 99 bits: A 55, B 44 | 16 bits of A's | 83 | 2^-77 |
+| Appointment, A's words leaked | B's 44 bits | nothing about B's | 44 | 2^-38 |
+| Appointment, B's words leaked | A's 55 bits | 16 bits | 39 | 2^-33 |
+| Physical token, token read by the attacker | 66 bits | nothing about the words | 66 | 2^-60 |
+| Physical token, words leaked, token safe | 256-bit secret | nothing | 256 | negligible |
+
+Only A's words reach the rendezvous id of an appointment. If its id came from all 9 words, it would
+be an offline test of all of them: 2^99 hashes, but only 2^44 once A's 5 words leak, few enough to
+try within the window. Mixing in the start time and the window bounds the guessing further:
+outside it, no device answers, and messages bound to another start time never complete.
 
 ### 11.3. Man in the middle with the words
 
@@ -335,7 +437,8 @@ decrypting later, still faces ML-KEM-768.
 Authentication rests on CPace and the safety words. CPace is not post-quantum, but it is
 "quantum-annoying" [CPACE] section 10.12: with a fresh `sid` and the context in `CI`, a quantum
 attacker must solve one discrete logarithm per guess at the words, during the 10-minute window,
-online. The safety words do not depend on any computational assumption.
+online. The token's secret is symmetric and 256 bits long, so a quantum attacker without the token
+gains nothing on it. The safety words do not depend on any computational assumption.
 
 ### 11.5. Forward secrecy
 
@@ -351,9 +454,18 @@ sides.
 
 ### 11.7. Asynchrony
 
-Both devices must take part within `INVITE_TTL`. This bounds the online guessing window and keeps
-pending secrets short-lived. Making first contact fully asynchronous, like a voucher token left
-for the other side, would extend that window and is left for a future version.
+Both devices must take part within `INVITE_TTL` of each other. This bounds the online guessing
+window and keeps pending secrets short-lived. The appointment and physical-token modes keep that
+bound but let the people choose when: at an agreed time, which each brings their own words for,
+or at any time before the token expires. Each answer still waits for a message from the other
+side, so it shows that the person who sent it was online then: in an appointment, within a window
+both people already agreed on. Applications that care delay their answers by a random time
+within the remaining `ttl`.
+
+The window of an appointment and the expiry of a token are checked against the device's wall clock,
+which the network can move. Moving it only changes whether that device builds the invitation: the
+other device checks its own clock, and the start time is part of `CI`, so a moved clock never makes
+an old invitation complete with a new one.
 
 ### 11.8. Metadata
 
@@ -369,10 +481,11 @@ check failed.
 
 ## 12. Test vectors
 
-`vectors/v0.json` holds a full handshake with every random value fixed: the inputs, the random
-values of each role in the order of section 7, the intermediate values (rendezvous, CPace
-generator, transcript and ISK, shared secrets, `ikm`, commitment, transcript hashes, seal keys and
-safety bytes), the three messages and the outputs. An implementation that injects those random
+`vectors/v0.json` (live), `vectors/v0-appointment.json` and `vectors/v0-physical-token.json` each
+hold a full handshake with every random value fixed: the inputs, the random values of each role in
+the order of section 7, the intermediate values (rendezvous, CPace generator, transcript and ISK,
+shared secrets, `ikm`, commitment, transcript hashes, seal keys and safety bytes), the three
+messages and the outputs. An implementation that injects those random
 values must reproduce every byte.
 
 The CPace layer can be checked on its own against [CPACE] appendix B.3.

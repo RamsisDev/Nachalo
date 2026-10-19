@@ -6,9 +6,9 @@
 //! msg3 A->B | sealed (nonce 32 | payload_a) |
 //! ```
 //!
-//! The 6 words are only the CPace password. The rest of each CPace message is CPace's
-//! associated data, so ISK authenticates both messages whole. The keys come from
-//! `ikm = ISK || ss_x25519 || ss_mlkem`, so breaking them needs all three.
+//! The invitation's secret (its words, plus the token in that mode) is only the CPace password.
+//! The rest of each CPace message is CPace's associated data, so ISK authenticates both messages
+//! whole. The keys come from `ikm = ISK || ss_x25519 || ss_mlkem`, so breaking them needs all three.
 //!
 //! Each payload is sealed under a key from the transcript so far, and its tag is that side's key
 //! confirmation. A failed `finish` leaves its state usable, so a third party's bogus answer
@@ -22,6 +22,10 @@
 //! The context both sides pass joins the words in CPace's channel identifier, so different
 //! applications or networks derive different keys and never complete the handshake. It never
 //! travels on the wire.
+//!
+//! An [`Invitation`] holds what the words, and in the other modes the appointment time or the
+//! physical token, turn into: the CPace password and channel identifier, the rendezvous id and
+//! how long a step may stay pending. The messages are the same in every mode.
 
 use curve25519_dalek::scalar::Scalar;
 use ml_kem::{Decapsulate, DecapsulationKey768, EncapsulationKey768, KeyExport};
@@ -32,7 +36,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::cpace::{self, SHARE_LEN};
 use crate::crypto::{self, CT_LEN, EK_LEN, KEY_LEN, Key, TAG_LEN};
-use crate::words::{normalize, spells, to_words};
+use crate::words::{
+    APPOINTMENT_WORDS_A, APPOINTMENT_WORDS_B, WORD_COUNT, normalize, spells, to_words,
+};
 
 /// Domain separation for everything Nachalo derives. Changes with every incompatible version.
 pub const PROTOCOL: &[u8] = b"Nachalo v0";
@@ -51,6 +57,16 @@ pub const RENDEZVOUS_LEN: usize = 32;
 /// most these 24 bits of the words, and each answer is still a single online guess at the
 /// other 42.
 const RENDEZVOUS_TAG_LEN: usize = 3;
+/// The same for an appointment, from A's words only. Every appointment slot has its own ids, so
+/// fewer bits keep unrelated invitations apart: whoever watches the id learns at most 16 of A's
+/// 55 bits and nothing about B's 44.
+const APPOINTMENT_TAG_LEN: usize = 2;
+/// An appointment can be answered from its start time until this many seconds later, wall clock.
+pub const APPOINTMENT_WINDOW: u64 = 1800;
+/// A physical token: a 32-byte secret, then the last second it is valid as a big-endian Unix
+/// time.
+pub const TOKEN_LEN: usize = 40;
+const TOKEN_SECRET_LEN: usize = 32;
 
 const SID_LEN: usize = 16;
 const DH_LEN: usize = 32;
@@ -84,16 +100,19 @@ const LABEL_SEAL_A: &[u8] = b"Nachalo v0 seal a";
 const LABEL_KEY: &[u8] = b"Nachalo v0 key";
 const LABEL_SAFETY: &[u8] = b"Nachalo v0 safety";
 const LABEL_EXPORT: &[u8] = b"Nachalo v0 export";
+const LABEL_APPOINTMENT: &[u8] = b"Nachalo v0 appointment";
+const LABEL_TOKEN: &[u8] = b"Nachalo v0 physical token";
 
-/// `Rejected` covers malformed input and failed confirmation, with no further detail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// Not exactly 6 words from the list.
+    /// Not the expected number of words from the list.
     BadWords,
-    /// Past its deadline, out of answers, or already finished.
+    /// Past its deadline, out of answers, already finished, or outside the window of its
+    /// appointment or physical token.
     Expired,
     /// More than [`MAX_PAYLOAD`] bytes.
     PayloadTooLarge,
+    /// Malformed input or failed confirmation, with no further detail.
     Rejected,
 }
 
@@ -105,13 +124,111 @@ pub enum Role {
     Responder,
 }
 
-/// Public id where A leaves its invitation and B looks for it, for the application to map onto
-/// its transport. Unrelated invitations may share it. Its bytes look random, but there are only
-/// 2^24 ids per context, so whoever lists them all still recognizes one.
-pub fn rendezvous(words: &str, context: &[u8]) -> Result<[u8; RENDEZVOUS_LEN], Error> {
-    let words = normalize(words).ok_or(Error::BadWords)?;
-    let tag = crypto::hkdf::<RENDEZVOUS_TAG_LEN>(context, words.as_bytes(), LABEL_RENDEZVOUS_TAG);
-    Ok(*crypto::hkdf(context, &*tag, LABEL_RENDEZVOUS))
+/// What both sides derive from the shared secret of one invitation, in one of three modes:
+/// [`live`](Invitation::live), [`appointment`](Invitation::appointment) or
+/// [`physical_token`](Invitation::physical_token). Both sides must build it from the same inputs.
+pub struct Invitation {
+    /// The CPace password.
+    prs: Zeroizing<Vec<u8>>,
+    /// The CPace channel identifier.
+    channel: Vec<u8>,
+    rendezvous: [u8; RENDEZVOUS_LEN],
+    /// How long a step started from this invitation may stay pending.
+    ttl: u64,
+}
+
+impl Invitation {
+    /// Live first contact: A draws [`WORD_COUNT`] words and both sides take part within
+    /// [`INVITE_TTL`].
+    pub fn live(words: &str, context: &[u8]) -> Result<Self, Error> {
+        let words = normalize(words, WORD_COUNT).ok_or(Error::BadWords)?;
+        let tag =
+            crypto::hkdf::<RENDEZVOUS_TAG_LEN>(context, words.as_bytes(), LABEL_RENDEZVOUS_TAG);
+        Ok(Invitation {
+            prs: Zeroizing::new(words.as_bytes().to_vec()),
+            channel: cpace::lv_cat(&[PROTOCOL, context]),
+            rendezvous: *crypto::hkdf(context, &*tag, LABEL_RENDEZVOUS),
+            ttl: INVITE_TTL,
+        })
+    }
+
+    /// First contact at an agreed time: A draws [`APPOINTMENT_WORDS_A`] words, B draws
+    /// [`APPOINTMENT_WORDS_B`], and they swap them along with `at`, the Unix time in seconds
+    /// when the appointment starts. Each side must build it, start and answer within
+    /// [`APPOINTMENT_WINDOW`] seconds from `at` on `now_unix`, its wall clock, and the whole
+    /// handshake, safety words included, must end by then. Invitations for another `at` never
+    /// complete.
+    pub fn appointment(
+        words_a: &str,
+        words_b: &str,
+        at: u64,
+        context: &[u8],
+        now_unix: u64,
+    ) -> Result<Self, Error> {
+        let a = normalize(words_a, APPOINTMENT_WORDS_A).ok_or(Error::BadWords)?;
+        let b = normalize(words_b, APPOINTMENT_WORDS_B).ok_or(Error::BadWords)?;
+        let end = at.saturating_add(APPOINTMENT_WINDOW);
+        if now_unix < at || now_unix > end {
+            return Err(Error::Expired);
+        }
+        let channel = cpace::lv_cat(&[PROTOCOL, context, LABEL_APPOINTMENT, &at.to_be_bytes()]);
+        let tag = crypto::hkdf::<APPOINTMENT_TAG_LEN>(&channel, a.as_bytes(), LABEL_RENDEZVOUS_TAG);
+        Ok(Invitation {
+            prs: Zeroizing::new(cpace::lv_cat(&[a.as_bytes(), b.as_bytes()])),
+            rendezvous: *crypto::hkdf(&channel, &*tag, LABEL_RENDEZVOUS),
+            channel,
+            ttl: INVITE_TTL.min(end - now_unix),
+        })
+    }
+
+    /// First contact through a physical token: bytes from [`new_physical_token`] that A hands B
+    /// in person on something B's device reads, along with [`WORD_COUNT`] words A gives B another
+    /// way. B starts the handshake and A answers. Each side must build it, start and answer by
+    /// the expiry the token carries, on `now_unix`, its wall clock.
+    pub fn physical_token(
+        words: &str,
+        token: &[u8; TOKEN_LEN],
+        context: &[u8],
+        now_unix: u64,
+    ) -> Result<Self, Error> {
+        let words = normalize(words, WORD_COUNT).ok_or(Error::BadWords)?;
+        let expires =
+            u64::from_be_bytes(token[TOKEN_SECRET_LEN..].try_into().expect("fixed layout"));
+        if now_unix > expires {
+            return Err(Error::Expired);
+        }
+        let channel = cpace::lv_cat(&[PROTOCOL, context, LABEL_TOKEN]);
+        // The token's secret cannot be guessed, so the id comes from all of it.
+        Ok(Invitation {
+            prs: Zeroizing::new(cpace::lv_cat(&[words.as_bytes(), token])),
+            rendezvous: *crypto::hkdf(&channel, token, LABEL_RENDEZVOUS),
+            channel,
+            ttl: INVITE_TTL.min(expires - now_unix),
+        })
+    }
+
+    /// Public id where the side that starts leaves msg1 and the other looks for it, for the
+    /// application to map onto its transport. Unrelated invitations may share it. Its bytes look
+    /// random, but a live invitation has only 2^24 ids per context and an appointment 2^16 per
+    /// context and start time, so whoever lists them all still recognizes one. The id of a physical
+    /// token comes from its secret and cannot be listed.
+    pub fn rendezvous(&self) -> [u8; RENDEZVOUS_LEN] {
+        self.rendezvous
+    }
+
+    fn deadline(&self, now: u64) -> u64 {
+        now.saturating_add(self.ttl)
+    }
+}
+
+/// A new physical token for A to hand over, valid for `lifetime` seconds from `now_unix`. A keeps
+/// it to build its own [`Invitation::physical_token`]; erase it once it expires.
+pub fn new_physical_token(lifetime: u64, now_unix: u64) -> Zeroizing<[u8; TOKEN_LEN]> {
+    let mut token = Zeroizing::new([0u8; TOKEN_LEN]);
+    token[..TOKEN_SECRET_LEN]
+        .copy_from_slice(&*Zeroizing::new(crypto::random::<TOKEN_SECRET_LEN>()));
+    token[TOKEN_SECRET_LEN..].copy_from_slice(&now_unix.saturating_add(lifetime).to_be_bytes());
+    token
 }
 
 /// Every random value of an initiator, drawn up front so test vectors can fix them.
@@ -145,7 +262,6 @@ impl Drop for InitiatorRandom {
     }
 }
 
-/// Every random value of a responder.
 pub(crate) struct ResponderRandom {
     pub cpace: [u8; 32],
     pub x25519: [u8; DH_LEN],
@@ -202,26 +318,24 @@ pub struct Initiator {
     nonce: Zeroizing<[u8; NONCE_LEN]>,
     payload: Zeroizing<Vec<u8>>,
     msg1: Vec<u8>,
-    started: u64,
+    deadline: u64,
     answers: u8,
     finished: bool,
 }
 
 impl Initiator {
-    /// Starts an invitation: send msg1 to the rendezvous of `words` and `context`. `now` is in
-    /// seconds on a clock of this device only.
+    /// Starts the handshake: send msg1 to [`Invitation::rendezvous`]. `now` is in seconds on a
+    /// clock of this device only.
     pub fn start(
-        words: &str,
-        context: &[u8],
+        invitation: &Invitation,
         payload: &[u8],
         now: u64,
     ) -> Result<(Initiator, Vec<u8>), Error> {
-        Self::start_with(words, context, payload, now, InitiatorRandom::new())
+        Self::start_with(invitation, payload, now, InitiatorRandom::new())
     }
 
     pub(crate) fn start_with(
-        words: &str,
-        context: &[u8],
+        invitation: &Invitation,
         payload: &[u8],
         now: u64,
         random: InitiatorRandom,
@@ -229,8 +343,7 @@ impl Initiator {
         if payload.len() > MAX_PAYLOAD {
             return Err(Error::PayloadTooLarge);
         }
-        let words = normalize(words).ok_or(Error::BadWords)?;
-        let g = cpace::generator(words.as_bytes(), &channel(context), &random.sid);
+        let g = cpace::generator(&invitation.prs, &invitation.channel, &random.sid);
         let y = Zeroizing::new(cpace::scalar(random.cpace));
         let x = StaticSecret::from(random.x25519);
         let dk = DecapsulationKey768::from_seed(random.ml_kem.into());
@@ -249,7 +362,7 @@ impl Initiator {
             nonce: Zeroizing::new(random.nonce),
             payload: Zeroizing::new(payload.to_vec()),
             msg1: msg1.clone(),
-            started: now,
+            deadline: invitation.deadline(now),
             answers: 0,
             finished: false,
         };
@@ -258,7 +371,7 @@ impl Initiator {
 
     /// The last second this invitation, safety words included, may complete.
     pub fn deadline(&self) -> u64 {
-        self.started.saturating_add(INVITE_TTL)
+        self.deadline
     }
 
     /// Completes the handshake with B's msg2: send msg3 to B, then have the user type the
@@ -281,21 +394,13 @@ impl Initiator {
             return Err(Error::Rejected);
         }
         let (prefix, sealed_b) = msg2.split_at(SEALED_B_AT);
-        let yb: &[u8; SHARE_LEN] = prefix[..XB_AT].try_into().expect("fixed layout");
-        let transcript_ir = cpace::transcript_ir(
-            &self.msg1[YA_AT..XA_AT],
-            &self.msg1[XA_AT..],
-            yb,
-            &prefix[XB_AT..],
-        );
-        let isk =
-            cpace::isk(&self.y, yb, &self.msg1[..YA_AT], &transcript_ir).ok_or(Error::Rejected)?;
+        let yb = prefix[..XB_AT].try_into().expect("fixed layout");
         let ss_x = contributory(self.x.diffie_hellman(&public(&prefix[XB_AT..CT_AT])))?;
         let ss_kem = Zeroizing::new(
             self.dk
                 .decapsulate(prefix[CT_AT..].try_into().expect("fixed layout")),
         );
-        let ikm = ikm(&isk, &ss_x, &ss_kem);
+        let ikm = ikm(&self.y, yb, &self.msg1, prefix, &ss_x, &ss_kem)?;
 
         let transcript = Transcript::new(&self.msg1);
         let key_b = key(&transcript.with(prefix), &ikm, LABEL_SEAL_B);
@@ -323,7 +428,7 @@ pub struct Responder {
     transcript: Transcript,
     /// A's commitment to the nonce and payload msg3 must carry.
     commitment: [u8; KEY_LEN],
-    started: u64,
+    deadline: u64,
 }
 
 impl Responder {
@@ -333,18 +438,16 @@ impl Responder {
     /// whoever sent it, and one more chance for someone in the middle to match the safety words,
     /// so cap how many you answer per invitation; [`MAX_ANSWERS`] keeps that chance at 2^-38.
     pub fn respond(
-        words: &str,
-        context: &[u8],
+        invitation: &Invitation,
         msg1: &[u8],
         payload: &[u8],
         now: u64,
     ) -> Result<(Responder, Vec<u8>), Error> {
-        Self::respond_with(words, context, msg1, payload, now, ResponderRandom::new())
+        Self::respond_with(invitation, msg1, payload, now, ResponderRandom::new())
     }
 
     pub(crate) fn respond_with(
-        words: &str,
-        context: &[u8],
+        invitation: &Invitation,
         msg1: &[u8],
         payload: &[u8],
         now: u64,
@@ -353,12 +456,10 @@ impl Responder {
         if payload.len() > MAX_PAYLOAD {
             return Err(Error::PayloadTooLarge);
         }
-        let words = normalize(words).ok_or(Error::BadWords)?;
         let msg1: &[u8; MSG1_LEN] = msg1.try_into().map_err(|_| Error::Rejected)?;
         let ek = EncapsulationKey768::new(msg1[EK_AT..].try_into().expect("fixed layout"))
             .map_err(|_| Error::Rejected)?;
-        let sid = &msg1[..YA_AT];
-        let g = cpace::generator(words.as_bytes(), &channel(context), sid);
+        let g = cpace::generator(&invitation.prs, &invitation.channel, &msg1[..YA_AT]);
         let y = Zeroizing::new(cpace::scalar(random.cpace));
         let x = StaticSecret::from(random.x25519);
         let ss_x = contributory(x.diffie_hellman(&public(&msg1[XA_AT..COMMIT_AT])))?;
@@ -369,15 +470,8 @@ impl Responder {
         msg2.extend_from_slice(&cpace::share(&y, &g));
         msg2.extend_from_slice(PublicKey::from(&x).as_bytes());
         msg2.extend_from_slice(&ct);
-        let transcript_ir = cpace::transcript_ir(
-            &msg1[YA_AT..XA_AT],
-            &msg1[XA_AT..],
-            &msg2[..XB_AT],
-            &msg2[XB_AT..],
-        );
-        let ya: &[u8; SHARE_LEN] = msg1[YA_AT..XA_AT].try_into().expect("fixed layout");
-        let isk = cpace::isk(&y, ya, sid, &transcript_ir).ok_or(Error::Rejected)?;
-        let ikm = ikm(&isk, &ss_x, &ss_kem);
+        let ya = msg1[YA_AT..XA_AT].try_into().expect("fixed layout");
+        let ikm = ikm(&y, ya, msg1, &msg2, &ss_x, &ss_kem)?;
 
         let transcript = Transcript::new(msg1);
         let key_b = key(&transcript.with(&msg2), &ikm, LABEL_SEAL_B);
@@ -387,14 +481,14 @@ impl Responder {
             ikm,
             transcript: transcript.with(&msg2),
             commitment: msg1[COMMIT_AT..EK_AT].try_into().expect("fixed layout"),
-            started: now,
+            deadline: invitation.deadline(now),
         };
         Ok((responder, msg2))
     }
 
     /// The last second this answer, safety words included, may complete.
     pub fn deadline(&self) -> u64 {
-        self.started.saturating_add(INVITE_TTL)
+        self.deadline
     }
 
     /// Completes the handshake with A's msg3: show the user [`Unconfirmed::safety_words`] to
@@ -526,11 +620,6 @@ impl Established {
     }
 }
 
-/// CPace's channel identifier: the protocol and the application's context.
-fn channel(context: &[u8]) -> Vec<u8> {
-    cpace::lv_cat(&[PROTOCOL, context])
-}
-
 fn commitment(nonce: &[u8], payload: &[u8]) -> [u8; KEY_LEN] {
     Sha256::digest(cpace::lv_cat(&[LABEL_COMMIT, nonce, payload])).into()
 }
@@ -547,12 +636,27 @@ fn contributory(ss: SharedSecret) -> Result<SharedSecret, Error> {
     ss.was_contributory().then_some(ss).ok_or(Error::Rejected)
 }
 
-fn ikm(isk: &[u8; cpace::ISK_LEN], ss_x: &SharedSecret, ss_kem: &[u8]) -> Ikm {
+/// `ISK || ss_x || ss_kem`, with ISK from CPace over msg1 and the `prefix` of msg2.
+fn ikm(
+    y: &Scalar,
+    theirs: &[u8; SHARE_LEN],
+    msg1: &[u8],
+    prefix: &[u8],
+    ss_x: &SharedSecret,
+    ss_kem: &[u8],
+) -> Result<Ikm, Error> {
+    let transcript_ir = cpace::transcript_ir(
+        &msg1[YA_AT..XA_AT],
+        &msg1[XA_AT..],
+        &prefix[..XB_AT],
+        &prefix[XB_AT..],
+    );
+    let isk = cpace::isk(y, theirs, &msg1[..YA_AT], &transcript_ir).ok_or(Error::Rejected)?;
     let mut ikm = Zeroizing::new([0u8; IKM_LEN]);
-    ikm[..cpace::ISK_LEN].copy_from_slice(isk);
+    ikm[..cpace::ISK_LEN].copy_from_slice(&*isk);
     ikm[cpace::ISK_LEN..cpace::ISK_LEN + KEY_LEN].copy_from_slice(ss_x.as_bytes());
     ikm[cpace::ISK_LEN + KEY_LEN..].copy_from_slice(ss_kem);
-    ikm
+    Ok(ikm)
 }
 
 #[cfg(test)]
@@ -570,14 +674,18 @@ mod tests {
     const PA: &[u8] = b"payload from A";
     const PB: &[u8] = b"payload from B, a bit longer";
 
+    fn live(words: &str) -> Invitation {
+        Invitation::live(words, CTX).unwrap()
+    }
+
     /// Runs a handshake, letting `tamper` change message `n` on the wire.
     fn run(
         words_b: &str,
         tamper: impl Fn(usize, &mut Vec<u8>),
     ) -> Result<(Unconfirmed, Unconfirmed), Error> {
-        let (mut a, mut msg1) = Initiator::start(WORDS, CTX, PA, NOW)?;
+        let (mut a, mut msg1) = Initiator::start(&live(WORDS), PA, NOW)?;
         tamper(1, &mut msg1);
-        let (b, mut msg2) = Responder::respond(words_b, CTX, &msg1, PB, NOW + 1)?;
+        let (b, mut msg2) = Responder::respond(&live(words_b), &msg1, PB, NOW + 1)?;
         tamper(2, &mut msg2);
         let (a, mut msg3) = a.finish(&msg2, NOW + 2)?;
         tamper(3, &mut msg3);
@@ -606,10 +714,10 @@ mod tests {
 
     #[test]
     fn message_lengths() {
-        let (mut a, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
         assert_eq!(msg1.len(), MSG1_LEN);
         assert_eq!(MSG1_LEN, 1296);
-        let (_, msg2) = Responder::respond(WORDS, CTX, &msg1, PB, NOW).unwrap();
+        let (_, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
         assert_eq!(msg2.len(), msg2_len(PB.len()));
         let (_, msg3) = a.finish(&msg2, NOW).unwrap();
         assert_eq!(msg3.len(), msg3_len(PA.len()));
@@ -621,8 +729,8 @@ mod tests {
             (&[][..], &[][..]),
             (&[7; MAX_PAYLOAD][..], &[9; MAX_PAYLOAD][..]),
         ] {
-            let (mut a, msg1) = Initiator::start(WORDS, CTX, pa, NOW).unwrap();
-            let (b, msg2) = Responder::respond(WORDS, CTX, &msg1, pb, NOW).unwrap();
+            let (mut a, msg1) = Initiator::start(&live(WORDS), pa, NOW).unwrap();
+            let (b, msg2) = Responder::respond(&live(WORDS), &msg1, pb, NOW).unwrap();
             let (a, msg3) = a.finish(&msg2, NOW).unwrap();
             let b = b.finish(&msg3, NOW).unwrap();
             let a = a.verify(&b.safety_words(), NOW).unwrap();
@@ -631,12 +739,12 @@ mod tests {
         }
         let big = [0; MAX_PAYLOAD + 1];
         assert_eq!(
-            Initiator::start(WORDS, CTX, &big, NOW).err(),
+            Initiator::start(&live(WORDS), &big, NOW).err(),
             Some(Error::PayloadTooLarge)
         );
-        let (_, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
+        let (_, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
         assert_eq!(
-            Responder::respond(WORDS, CTX, &msg1, &big, NOW).err(),
+            Responder::respond(&live(WORDS), &msg1, &big, NOW).err(),
             Some(Error::PayloadTooLarge)
         );
     }
@@ -644,13 +752,13 @@ mod tests {
     #[test]
     fn a_man_in_the_middle_with_the_words_shows_different_safety_words() {
         // M answers A as B and invites B as A, running two handshakes with the same words.
-        let (mut a, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
-        let (m_as_b, msg2) = Responder::respond(WORDS, CTX, &msg1, b"M", NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+        let (m_as_b, msg2) = Responder::respond(&live(WORDS), &msg1, b"M", NOW).unwrap();
         let (a, msg3) = a.finish(&msg2, NOW).unwrap();
         let m_with_a = m_as_b.finish(&msg3, NOW).unwrap();
 
-        let (mut m_as_a, msg1) = Initiator::start(WORDS, CTX, b"M", NOW).unwrap();
-        let (b, msg2) = Responder::respond(WORDS, CTX, &msg1, PB, NOW).unwrap();
+        let (mut m_as_a, msg1) = Initiator::start(&live(WORDS), b"M", NOW).unwrap();
+        let (b, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
         let (m_with_b, msg3) = m_as_a.finish(&msg2, NOW).unwrap();
         let b = b.finish(&msg3, NOW).unwrap();
 
@@ -666,8 +774,8 @@ mod tests {
     #[test]
     fn msg3_must_open_the_commitment() {
         for swap_nonce in [true, false] {
-            let (mut a, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
-            let (b, msg2) = Responder::respond(WORDS, CTX, &msg1, PB, NOW).unwrap();
+            let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+            let (b, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
             // A grinding man in the middle swaps in another nonce, or payload, after msg2.
             if swap_nonce {
                 a.nonce = Zeroizing::new([3; NONCE_LEN]);
@@ -686,21 +794,24 @@ mod tests {
 
     #[test]
     fn different_contexts_never_complete() {
-        let (mut a, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
-        let (_, msg2) = Responder::respond(WORDS, b"other", &msg1, PB, NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+        let (_, msg2) =
+            Responder::respond(&Invitation::live(WORDS, b"other").unwrap(), &msg1, PB, NOW)
+                .unwrap();
         assert_eq!(a.finish(&msg2, NOW).err(), Some(Error::Rejected));
-        let (_, msg2) = Responder::respond(WORDS, b"", &msg1, PB, NOW).unwrap();
+        let (_, msg2) =
+            Responder::respond(&Invitation::live(WORDS, b"").unwrap(), &msg1, PB, NOW).unwrap();
         assert_eq!(a.finish(&msg2, NOW).err(), Some(Error::Rejected));
     }
 
     #[test]
     fn bogus_answers_leave_both_sides_usable() {
-        let (mut a, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
-        let (_, guess) = Responder::respond(WRONG, CTX, &msg1, PB, NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+        let (_, guess) = Responder::respond(&live(WRONG), &msg1, PB, NOW).unwrap();
         assert_eq!(a.finish(&guess, NOW).err(), Some(Error::Rejected));
         assert_eq!(a.finish(&[0; 2000], NOW).err(), Some(Error::Rejected));
 
-        let (b, msg2) = Responder::respond(WORDS, CTX, &msg1, PB, NOW).unwrap();
+        let (b, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
         let (a, msg3) = a.finish(&msg2, NOW).unwrap();
         let mut forged = msg3.clone();
         forged[0] ^= 1;
@@ -711,16 +822,16 @@ mod tests {
 
     #[test]
     fn an_initiator_takes_max_answers_wrong_ones_then_finishes_once() {
-        let (mut a, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
-        let (_, msg2) = Responder::respond(WORDS, CTX, &msg1, PB, NOW).unwrap();
-        let (_, guess) = Responder::respond(WRONG, CTX, &msg1, PB, NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+        let (_, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
+        let (_, guess) = Responder::respond(&live(WRONG), &msg1, PB, NOW).unwrap();
         for _ in 0..MAX_ANSWERS {
             assert_eq!(a.finish(&guess, NOW).err(), Some(Error::Rejected));
         }
         assert_eq!(a.finish(&msg2, NOW).err(), Some(Error::Expired));
 
-        let (mut a, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
-        let (_, msg2) = Responder::respond(WORDS, CTX, &msg1, PB, NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+        let (_, msg2) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
         assert!(a.finish(&msg2, NOW).is_ok());
         assert_eq!(a.finish(&msg2, NOW).err(), Some(Error::Expired));
     }
@@ -772,8 +883,8 @@ mod tests {
             };
             assert_eq!(run(WORDS, resize).err(), Some(Error::Rejected), "msg{msg}");
         }
-        let (mut a, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
-        let (b, _) = Responder::respond(WORDS, CTX, &msg1, PB, NOW).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+        let (b, _) = Responder::respond(&live(WORDS), &msg1, PB, NOW).unwrap();
         assert_eq!(a.finish(&[], NOW).err(), Some(Error::Rejected));
         assert_eq!(
             a.finish(&vec![0; msg2_len(MAX_PAYLOAD) + 1], NOW).err(),
@@ -788,8 +899,8 @@ mod tests {
     #[test]
     fn each_side_expires_its_own_step_on_its_own_clock() {
         const B_CLOCK: u64 = 42;
-        let (mut a, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
-        let (b, msg2) = Responder::respond(WORDS, CTX, &msg1, PB, B_CLOCK).unwrap();
+        let (mut a, msg1) = Initiator::start(&live(WORDS), PA, NOW).unwrap();
+        let (b, msg2) = Responder::respond(&live(WORDS), &msg1, PB, B_CLOCK).unwrap();
         assert_eq!(
             a.finish(&msg2, NOW + INVITE_TTL + 1).err(),
             Some(Error::Expired)
@@ -814,28 +925,157 @@ mod tests {
 
     #[test]
     fn bad_words_rejected_up_front() {
+        for words in ["my dog is called max now", "alpha", ""] {
+            assert_eq!(Invitation::live(words, CTX).err(), Some(Error::BadWords));
+        }
+    }
+
+    #[test]
+    fn rendezvous_keeps_only_a_short_tag_of_the_normalized_words() {
+        let id = live(WORDS).rendezvous();
         assert_eq!(
-            Initiator::start("my dog is called max now", CTX, PA, NOW).err(),
-            Some(Error::BadWords)
+            live(" ALPHA cable echo forest orbit Velvet").rendezvous(),
+            id
         );
-        let (_, msg1) = Initiator::start(WORDS, CTX, PA, NOW).unwrap();
+        assert_ne!(live(WRONG).rendezvous(), id);
+        assert_ne!(Invitation::live(WORDS, b"other").unwrap().rendezvous(), id);
+        let tag = crypto::hkdf::<RENDEZVOUS_TAG_LEN>(CTX, WORDS.as_bytes(), LABEL_RENDEZVOUS_TAG);
+        assert_eq!(*crypto::hkdf(CTX, &*tag, LABEL_RENDEZVOUS), id);
+    }
+
+    const WORDS_A: &str = "alpha cable echo forest orbit";
+    const WORDS_B: &str = "velvet stone happy river";
+    const AT: u64 = 1_900_000_000;
+
+    fn appointment(words_b: &str, at: u64, now_unix: u64) -> Result<Invitation, Error> {
+        Invitation::appointment(WORDS_A, words_b, at, CTX, now_unix)
+    }
+
+    /// Runs a handshake between two invitations; both clocks are passed as `NOW`.
+    fn complete(a: &Invitation, b: &Invitation) -> Result<(Established, Established), Error> {
+        let (mut ia, msg1) = Initiator::start(a, PA, NOW)?;
+        let (rb, msg2) = Responder::respond(b, &msg1, PB, NOW)?;
+        let (ua, msg3) = ia.finish(&msg2, NOW)?;
+        let ub = rb.finish(&msg3, NOW)?;
+        Ok((ua.verify(&ub.safety_words(), NOW)?, ub.confirm(NOW)?))
+    }
+
+    #[test]
+    fn an_appointment_completes_within_its_window() {
+        let a = appointment(WORDS_B, AT, AT).unwrap();
+        let b = Invitation::appointment(
+            " ALPHA cable echo forest orbit",
+            WORDS_B,
+            AT,
+            CTX,
+            AT + 1799,
+        )
+        .unwrap();
+        assert_eq!(a.rendezvous(), b.rendezvous());
+        let (a, b) = complete(&a, &b).unwrap();
+        assert_eq!(a.key(), b.key());
+        assert_eq!((a.peer_payload(), b.peer_payload()), (PB, PA));
+    }
+
+    #[test]
+    fn an_appointment_outside_its_window_fails() {
+        for now_unix in [0, AT - 1, AT + APPOINTMENT_WINDOW + 1, u64::MAX] {
+            assert_eq!(
+                appointment(WORDS_B, AT, now_unix).err(),
+                Some(Error::Expired)
+            );
+        }
+        assert!(appointment(WORDS_B, AT, AT + APPOINTMENT_WINDOW).is_ok());
+
+        // A step started near the end dies with the window, not INVITE_TTL later.
+        let late = appointment(WORDS_B, AT, AT + APPOINTMENT_WINDOW - 5).unwrap();
+        let (mut a, msg1) = Initiator::start(&late, PA, NOW).unwrap();
+        assert_eq!(a.deadline(), NOW + 5);
+        let (b, msg2) = Responder::respond(&late, &msg1, PB, NOW).unwrap();
+        assert_eq!(b.deadline(), NOW + 5);
+        assert_eq!(a.finish(&msg2, NOW + 6).err(), Some(Error::Expired));
+    }
+
+    #[test]
+    fn appointments_at_other_times_or_with_other_words_never_complete() {
+        let a = appointment(WORDS_B, AT, AT).unwrap();
+        let other_time = appointment(WORDS_B, AT + 60, AT + 60).unwrap();
+        assert_ne!(a.rendezvous(), other_time.rendezvous());
+        assert_eq!(complete(&a, &other_time).err(), Some(Error::Rejected));
+        let wrong_b = appointment("velvet stone happy zoo", AT, AT).unwrap();
+        assert_eq!(complete(&a, &wrong_b).err(), Some(Error::Rejected));
+        // The same 9 words split differently are another password.
+        let split = Invitation::appointment(
+            "alpha cable echo forest",
+            "orbit velvet stone happy",
+            AT,
+            CTX,
+            AT,
+        );
+        assert_eq!(split.err(), Some(Error::BadWords));
+        // A live invitation never meets an appointment, even with the same context.
+        let live = live(WORDS);
+        assert_eq!(complete(&live, &a).err(), Some(Error::Rejected));
+    }
+
+    #[test]
+    fn the_appointment_rendezvous_reveals_nothing_about_b_words() {
+        let id = appointment(WORDS_B, AT, AT).unwrap().rendezvous();
         assert_eq!(
-            Responder::respond("alpha", CTX, &msg1, PB, NOW).err(),
+            appointment("zoo zoo zoo zoo", AT, AT).unwrap().rendezvous(),
+            id
+        );
+        let other_a = Invitation::appointment("alpha cable echo forest zoo", WORDS_B, AT, CTX, AT);
+        assert_ne!(other_a.unwrap().rendezvous(), id);
+        assert_eq!(
+            appointment("velvet stone happy", AT, AT).err(),
             Some(Error::BadWords)
         );
     }
 
     #[test]
-    fn rendezvous_keeps_only_a_short_tag_of_the_normalized_words() {
-        let id = rendezvous(WORDS, CTX).unwrap();
+    fn a_physical_token_works_until_it_expires() {
+        let token = new_physical_token(3600, AT);
+        assert_eq!(&token[TOKEN_SECRET_LEN..], &(AT + 3600).to_be_bytes());
+        let a = Invitation::physical_token(WORDS, &token, CTX, AT).unwrap();
+        let b = Invitation::physical_token(WORDS, &token, CTX, AT + 3600).unwrap();
+        assert_eq!(a.rendezvous(), b.rendezvous());
+        // B read the token and starts; A only answers.
+        let (b, a) = complete(&b, &a).unwrap();
+        assert_eq!(a.key(), b.key());
+        assert_eq!((b.peer_payload(), a.peer_payload()), (PB, PA));
+
         assert_eq!(
-            rendezvous(" ALPHA cable echo forest orbit Velvet", CTX),
-            Ok(id)
+            Invitation::physical_token(WORDS, &token, CTX, AT + 3601).err(),
+            Some(Error::Expired)
         );
-        assert_ne!(rendezvous(WRONG, CTX), Ok(id));
-        assert_ne!(rendezvous(WORDS, b"other"), Ok(id));
-        let tag = crypto::hkdf::<RENDEZVOUS_TAG_LEN>(CTX, WORDS.as_bytes(), LABEL_RENDEZVOUS_TAG);
-        assert_eq!(*crypto::hkdf(CTX, &*tag, LABEL_RENDEZVOUS), id);
-        assert_eq!(rendezvous("alpha bravo", CTX), Err(Error::BadWords));
+        // A step started near expiry dies with the token.
+        let late = Invitation::physical_token(WORDS, &token, CTX, AT + 3598).unwrap();
+        assert_eq!(
+            Initiator::start(&late, PA, NOW).unwrap().0.deadline(),
+            NOW + 2
+        );
+    }
+
+    #[test]
+    fn a_physical_token_needs_the_words_too() {
+        let token = new_physical_token(3600, AT);
+        let a = Invitation::physical_token(WORDS, &token, CTX, AT).unwrap();
+        let other_token =
+            Invitation::physical_token(WORDS, &new_physical_token(3600, AT), CTX, AT).unwrap();
+        assert_ne!(a.rendezvous(), other_token.rendezvous());
+        assert_eq!(complete(&other_token, &a).err(), Some(Error::Rejected));
+        let wrong_words = Invitation::physical_token(WRONG, &token, CTX, AT).unwrap();
+        assert_eq!(a.rendezvous(), wrong_words.rendezvous());
+        assert_eq!(complete(&wrong_words, &a).err(), Some(Error::Rejected));
+        // A token whose expiry was rewritten is another token.
+        let mut moved = *token;
+        moved[TOKEN_LEN - 1] ^= 1;
+        let moved = Invitation::physical_token(WORDS, &moved, CTX, AT).unwrap();
+        assert_eq!(complete(&moved, &a).err(), Some(Error::Rejected));
+        assert_eq!(
+            Invitation::physical_token("alpha", &token, CTX, AT).err(),
+            Some(Error::BadWords)
+        );
     }
 }
