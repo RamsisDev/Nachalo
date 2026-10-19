@@ -1,30 +1,52 @@
 ![Nachalo](assets/Nachalo.png)
 
-Nachalo is a protocol for first contact between two people who share nothing but a few words.
-From those words alone, their two devices agree on a shared key, exchange one payload each way,
-and let the people detect anyone sitting in the middle.
+# Nachalo
 
-This repository holds the protocol: [its specification](spec/nachalo.md), which defines it, and
-[test vectors](vectors/), which let any implementation check itself byte by byte. It also holds a
-reference implementation in Rust. Nachalo defines three messages and what each side computes;
-carrying the messages, keeping time and everything the people see belong to the application.
+[![CI](https://github.com/RamsisDev/Nachalo/actions/workflows/ci.yml/badge.svg)](https://github.com/RamsisDev/Nachalo/actions/workflows/ci.yml)
+[![Spec: CC BY 4.0](https://img.shields.io/badge/spec-CC%20BY%204.0-blue)](spec/LICENSE)
+[![Code: MIT OR Apache-2.0](https://img.shields.io/badge/code-MIT%20OR%20Apache--2.0-blue)](#license)
+![Status: draft v0](https://img.shields.io/badge/status-draft%20v0-orange)
+
+**First contact between two people who share nothing but a few words.**
+
+Nachalo ("beginning") is an open protocol for that first moment. From a few words alone, two
+devices agree on a shared key, exchange one payload each way, and let the people detect anyone
+sitting in the middle. No accounts, no servers of its own, no identifiers on the wire, and a key
+that stays secret against a future quantum computer.
+
+> [!WARNING]
+> Nachalo is a draft (`v0`). The wire format may still change, and neither the protocol nor the
+> reference implementation has been audited or formally verified. **Do not rely on it for real
+> protection yet.**
+
+## Why
+
+Two people who want to talk privately have to bootstrap trust somehow. Exchanging public keys or
+scanning QR codes works when they are side by side; reading out fingerprints is tedious and
+easy to skip. Nachalo starts from something people can actually pass along: a few random words,
+spoken, written down or sent over another app. From those words it produces what a secure
+messenger, a file-sharing app or a peer-to-peer network needs to start: a shared key and one
+authenticated payload each way, such as the first key of a ratchet or the read capability of a
+channel.
 
 ## How it works
 
-1. **Invitation.** The two people set one up outside the protocol: spoken, written down, or over
-   another app. It comes in three modes:
-   - **live**: A draws 6 random words and gives them to B; both devices take part within minutes;
-   - **appointment**: A draws 5 words and B draws 4, they swap them and agree on a start time; the
-     invitation works for 30 minutes from then and never again;
-   - **physical token**: A hands B in person a token holding a random secret and an expiry, which
-     B's device reads, and gives B 6 words; B's device starts and A's only has to answer.
-2. **Handshake.** The two devices exchange three messages. They agree on a key and each receives
-   the other's payload, such as the first key of a ratchet or the read capability of a channel.
-3. **Safety words.** B's device shows 4 safety words, and A types them into A's device. If they
-   match, nobody who intercepted the words sat in the middle.
+1. **Invitation.** The two people set one up outside the protocol, in one of three modes.
+2. **Handshake.** The two devices exchange three messages over any transport. They agree on a key
+   and each receives the other's payload.
+3. **Safety words.** One device shows 4 words, and the other person types them. If they match,
+   nobody who intercepted the invitation sat in the middle.
+
+| Mode | The people swap | They connect | Read more |
+| --- | --- | --- | --- |
+| **Live** | 6 words | Within minutes | [docs/live.md](docs/live.md) |
+| **Appointment** | 5 words one way, 4 the other, and a start time | In a 30-minute window at that time, then never again | [docs/appointment.md](docs/appointment.md) |
+| **Physical token** | A token handed over in person, and 6 words | Any time before the token expires | [docs/physical-token.md](docs/physical-token.md) |
 
 The handshake combines CPace ([draft-irtf-cfrg-cpace], suite CPACE-RISTR255-SHA512), X25519 and
-ML-KEM-768. Breaking the key requires breaking all three.
+ML-KEM-768. Breaking the key requires breaking all three. [The handshake](docs/handshake.md)
+explains the messages, the payloads and the safety words, and [docs/](docs/README.md) helps you
+choose a mode.
 
 ## Security properties
 
@@ -36,52 +58,68 @@ ML-KEM-768. Breaking the key requires breaking all three.
 | Forward secrecy | Every key is ephemeral; learning the words afterwards does not reveal the key. |
 | Metadata | No identifiers, accounts or timestamps on the wire. Message lengths reveal payload lengths. |
 
-Someone who knows the words (and the token, in physical-token mode) learns both payloads before
-the safety words are compared. If the safety words do not match, the application must discard
-everything the handshake carried and start over with new words. Section 11 of the specification
+Someone who knows the whole invitation learns both payloads before the safety words are compared.
+If the safety words do not match, the application must discard everything the handshake carried
+and start over with new words. [Section 11 of the specification](spec/nachalo.md#11-security-considerations)
 covers the full threat model.
 
-## Status
+## What is in this repository
 
-Draft, version `v0`. The wire format may still change; the first stable version will be `v1`.
-Neither the protocol nor the reference implementation has been audited or formally verified.
-**Do not rely on it for real protection yet.**
+| Path | What it is |
+| --- | --- |
+| [`spec/nachalo.md`](spec/nachalo.md) | The specification. It defines the protocol, byte by byte. |
+| [`vectors/`](vectors/) | Test vectors: one full handshake per mode, with every random value fixed. |
+| [`docs/`](docs/README.md) | A guide to the protocol and each invitation mode. |
+| [`src/`](src/) | The reference implementation, a Rust crate. |
+
+Nachalo is a protocol, not a library. Anyone can implement it from the specification and check
+their implementation against the test vectors. Where the reference implementation and the
+specification differ, the specification wins.
 
 ## Reference implementation
 
 The Rust crate in this repository implements the specification and generates the test vectors.
 Its CPace layer also passes the test vectors of [draft-irtf-cfrg-cpace]. It is sans-IO: it takes
-bytes in and returns bytes out, and never sends messages, runs a server or stores anything.
+bytes in and returns bytes out, and never sends messages, runs a server or stores anything. It
+contains no `unsafe` code and requires Rust 1.88 or later.
 
 ```toml
 [dependencies]
 nachalo = { git = "https://github.com/RamsisDev/Nachalo" }
 ```
 
-Requires Rust 1.88 or later. The crate contains no `unsafe` code.
+A live first contact, with both sides in one process:
 
 ```rust
 use nachalo::{Initiator, Invitation, Responder, words};
 
-let context = b"my-app v1";
-let words = words(6); // A gives these to B outside the protocol
-let invitation = Invitation::live(&words, context)?; // both sides build it
-// or Invitation::appointment(&words_a, &words_b, at, context, now_unix)?
-// or Invitation::physical_token(&words, &token, context, now_unix)?
+fn main() -> Result<(), nachalo::Error> {
+    let context = b"my-app v1"; // equal on both sides, never sent
+    let now = 0; // seconds, from each device's own monotonic clock
 
-// A posts msg1 at invitation.rendezvous()
-let (mut a, msg1) = Initiator::start(&invitation, b"A's payload", now)?;
-// B finds it there and answers
-let (b, msg2) = Responder::respond(&invitation, &msg1, b"B's payload", now)?;
-let (a, msg3) = a.finish(&msg2, now)?;
-let b = b.finish(&msg3, now)?;
+    let words = words(6); // A's device draws them, and A gives them to B
+    let invitation = Invitation::live(&words, context)?; // both sides build it
 
-// B shows b.safety_words(); A's user types them
-let a = a.verify(&typed_by_a, now)?;
-let b = b.confirm(now)?; // once A says they matched
-assert_eq!(a.key(), b.key());
-assert_eq!(a.peer_payload(), b"B's payload");
+    // A posts msg1 at invitation.rendezvous(); B finds it there and answers.
+    let (mut a, msg1) = Initiator::start(&invitation, b"A's payload", now)?;
+    let (b, msg2) = Responder::respond(&invitation, &msg1, b"B's payload", now)?;
+    let (a, msg3) = a.finish(&msg2, now)?;
+    let b = b.finish(&msg3, now)?;
+
+    // B reads out b.safety_words(), A types them, and B confirms once A says they matched.
+    let a = a.verify(&b.safety_words(), now)?;
+    let b = b.confirm(now)?;
+
+    assert_eq!(a.key(), b.key());
+    assert_eq!(a.peer_payload(), b"B's payload");
+    Ok(())
+}
 ```
+
+The other modes only change how the invitation is built:
+`Invitation::appointment(words_a, words_b, at, context, now_unix)` and
+`Invitation::physical_token(words, token, context, now_unix)`. Each page in [docs/](docs/README.md)
+has a full example.
 
 The application provides:
 
@@ -92,15 +130,40 @@ The application provides:
   appointment or when a token expires. Building an appointment or physical-token invitation also
   takes `now_unix`, the wall clock, to check its window.
 - **The physical token.** `new_physical_token(lifetime, now_unix)` returns the 40 bytes to hand
-  over; A keeps a copy and erases it once it expires.
-- **A cap on answers.** B should answer at most `MAX_ANSWERS` msg1 per invitation. The initiator
-  enforces its own cap.
+  over; the maker keeps a copy and erases it once it expires.
+- **A cap on answers.** The responder should answer at most `MAX_ANSWERS` msg1 per invitation.
+  The initiator enforces its own cap.
 - **The user interface** for entering the words and comparing the safety words.
 
+## Development
+
 ```bash
-cargo test                                  # unit tests, CPace draft vectors, Nachalo vectors
+cargo test                                  # unit tests, CPace draft vectors, Nachalo vectors, doc examples
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all --check
 NACHALO_WRITE_VECTORS=1 cargo test vectors  # rewrite vectors/ after a deliberate change
 ```
+
+The code examples in this README and in `docs/` are compiled and run by `cargo test`.
+
+## Contributing
+
+Issues and pull requests are welcome, from typo fixes to independent implementations.
+
+- **Protocol changes start in the specification.** Open an issue describing the problem first;
+  a change to `spec/nachalo.md` usually means new test vectors and a change to the reference
+  implementation in the same pull request.
+- **Code changes** must pass `cargo fmt`, `cargo clippy` and `cargo test`, as CI checks.
+- **Implementations in other languages** are especially welcome. Tell us about yours in an issue,
+  and report anything in the specification that was unclear or ambiguous.
+
+By contributing, you agree that your contributions are licensed as described below.
+
+## Reporting a vulnerability
+
+Please do not open a public issue for a security problem in the protocol or the implementation.
+Report it privately through
+[GitHub's private vulnerability reporting](https://github.com/RamsisDev/Nachalo/security/advisories/new).
 
 ## Roadmap
 
@@ -111,7 +174,7 @@ NACHALO_WRITE_VECTORS=1 cargo test vectors  # rewrite vectors/ after a deliberat
 
 ## License
 
-The specification is licensed under [CC BY 4.0](spec/LICENSE). The code is licensed under either
-[Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
+The specification and the documentation are licensed under [CC BY 4.0](spec/LICENSE). The code
+is licensed under either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
 
 [draft-irtf-cfrg-cpace]: https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/

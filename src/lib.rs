@@ -64,3 +64,16 @@ pub use handshake::{
     Unconfirmed, msg2_len, msg3_len, new_physical_token,
 };
 pub use words::{APPOINTMENT_WORDS_A, APPOINTMENT_WORDS_B, WORD_COUNT, words};
+
+/// Runs the examples of the README and `docs/` as doctests, so they stay in sync with the crate.
+#[cfg(doctest)]
+mod docs {
+    #[doc = include_str!("../README.md")]
+    struct Readme;
+    #[doc = include_str!("../docs/live.md")]
+    struct Live;
+    #[doc = include_str!("../docs/appointment.md")]
+    struct Appointment;
+    #[doc = include_str!("../docs/physical-token.md")]
+    struct PhysicalToken;
+}
