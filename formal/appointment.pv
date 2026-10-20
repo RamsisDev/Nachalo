@@ -1,6 +1,6 @@
 (* Appointment mode (spec section 6.2), against an attacker that knows neither group of words.
    The same 9 words are reused for an appointment at another time, as people might after a
-   missed one. appointment-leaks.pv covers one group leaking. *)
+   missed one. appointment-a-leaked.pv and appointment-b-leaked.pv cover one group leaking. *)
 
 free context: bitstring.
 free at, at_other: bitstring.
