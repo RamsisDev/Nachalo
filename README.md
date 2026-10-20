@@ -99,7 +99,7 @@ contains no `unsafe` code and requires Rust 1.88 or later.
 
 ```toml
 [dependencies]
-nachalo = { git = "https://github.com/RamsisDev/Nachalo" }
+nachalo = "0.1"
 ```
 
 A live first contact, with both sides in one process:
