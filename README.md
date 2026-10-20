@@ -6,7 +6,7 @@
 [![Spec: CC BY 4.0](https://img.shields.io/badge/spec-CC%20BY%204.0-blue)](spec/LICENSE)
 [![Code: MIT OR Apache-2.0](https://img.shields.io/badge/code-MIT%20OR%20Apache--2.0-blue)](#license)
 [![crates.io](https://img.shields.io/crates/v/nachalo)](https://crates.io/crates/nachalo)
-![Protocol: draft v0](https://img.shields.io/badge/protocol-draft%20v0-orange)
+![Protocol: draft v0.1](https://img.shields.io/badge/protocol-draft%20v0.1-orange)
 
 **First contact between two people who share nothing but a few words.**
 
