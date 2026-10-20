@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (2026-10-20)
 
-The wire format, `CI` and the test vectors are unchanged; `PROTOCOL` stays `"Nachalo v0"`.
+The first release. Compared with the earlier drafts, the wire format, `CI` and the test vectors
+are unchanged; `PROTOCOL` stays `"Nachalo v0"`.
 
 - **Receivers accept payloads up to `PAYLOAD_CEILING` (8192 bytes)**, whatever they send
   themselves. An implementation that still rejects payloads over 1024 bytes fails against one
@@ -27,8 +28,8 @@ The wire format, `CI` and the test vectors are unchanged; `PROTOCOL` stays `"Nac
   `Error` gains `Rng`.
 - **Words are looked up in constant time**, by index into the list and, when typed, compared with
   every list word.
-- **The published crate includes `vectors/` and `docs/`**, so `cargo test` passes on the crates.io
-  download.
+- **The published crate includes `vectors/` and `docs/`**, so `cargo test` passes on the packaged
+  crate.
 - **Negative test vectors**, `vectors/v0-negative.json`: messages and times that must be rejected.
 - Fuzz targets (`fuzz/`), property tests and benchmarks. Every public item is documented.
 - **Bindings for TypeScript, Kotlin, Swift and Go.** The repository is a Cargo workspace with two
@@ -41,4 +42,5 @@ The wire format, `CI` and the test vectors are unchanged; `PROTOCOL` stays `"Nac
   catch a man in the middle who knows the words, and keys that ML-KEM-768 alone keeps secret from
   a future quantum computer. `formal/check.sh` runs it, and so does CI when a release is
   published. It also shows that B's payload, sealed before B knows who sent msg1, is protected
-  only by CPace against that quantum attacker.
+  only by CPace against that quantum attacker; section 11.4 of the specification and
+  `docs/handshake.md` now cover that case.

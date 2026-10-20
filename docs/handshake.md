@@ -81,6 +81,13 @@ Payloads are confidential against anyone who does not know the invitation. They 
 learned the words. The reference implementation keeps the peer's payload locked inside the
 `Unconfirmed` state until the safety words are checked.
 
+One exception: B's payload against a future quantum computer. B seals it before it can tell who
+sent msg1, so an attacker that sends msg1 itself today, and later has a quantum computer, can
+guess the words offline against it, one discrete logarithm per guess. Put in B's payload only what
+may become public then, such as public keys, or capabilities rotated once the handshake completes.
+A's payload and the key are not affected. See
+[section 11.4 of the specification](../spec/nachalo.md#114-quantum-attackers).
+
 ## Safety words
 
 CPace proves that the other device knows the invitation, not that nobody else does. An attacker

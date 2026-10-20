@@ -69,5 +69,5 @@ at least one attack, which ProVerif must find.
   msg2, before it can tell who sent msg1. An attacker that sends msg1 today with its own ML-KEM
   key knows `ss_kem`, so only CPace protects that msg2. Later, with a quantum computer, it can
   recover B's CPace scalar for each guess at the words and test it against the sealed payload:
-  one discrete logarithm per guess, offline and with no time limit. Section 11.4 bounds the
-  passive attacker and online guessing, not this case.
+  one discrete logarithm per guess, offline and with no time limit. Section 11.4 of the
+  specification now describes this case and what applications should keep out of `payload_b`.

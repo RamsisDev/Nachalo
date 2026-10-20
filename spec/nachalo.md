@@ -1,7 +1,8 @@
 # Nachalo v0
 
-**Status:** draft. Not audited, not formally verified. Version `v0` may still change without
-notice; the first stable version will be `v1`.
+**Status:** draft. Not audited. A symbolic model in ProVerif, in `formal/` next to this document,
+checks the handshake of sections 7 and 8 in each mode; there is no computational proof. Version
+`v0` may still change without notice; the first stable version will be `v1`.
 
 **License:** this document is licensed under [CC BY 4.0](LICENSE).
 
@@ -390,8 +391,9 @@ export(label) = HKDF(th, key, lv_cat(L_EXPORT, label), 32)
 
 ## 9. Payloads
 
-Payloads are opaque to Nachalo. They are confidential against anyone without the words, and
-authenticated once the safety words match. Typical payloads:
+Payloads are opaque to Nachalo. They are confidential against anyone without the words, except
+`payload_b` against an attacker that sends msg1 now and has a quantum computer later (section
+11.4), and authenticated once the safety words match. Typical payloads:
 
 - **A ratchet:** each side's first ratchet public key, so both can send as soon as the safety words
   match.
@@ -482,6 +484,17 @@ random nonce in it.
 Key secrecy rests on three shared secrets, combined in `ikm`: breaking it needs CPace's ISK,
 X25519's and ML-KEM-768's. A passive attacker with a quantum computer, recording now and
 decrypting later, still faces ML-KEM-768.
+
+This does not cover `payload_b` against an active attacker. B seals it in msg2 before it can tell
+who sent msg1. An attacker that sends msg1 itself, with its own `xa` and `(ek, dk)`, knows `ss_x`
+and `ss_kem`, so only `ISK` protects that msg2. Later, with a quantum computer, it can take each
+guess at `PRS`, compute `g`, recover `yb` from `Yb`, and try the resulting `key_b` on `sealed_b`:
+one discrete logarithm per guess, offline and with no time limit, up to `2^r` guesses with `r` as
+in section 11.2. In the physical-token mode, `PRS` holds the token's secret, so this needs the
+token. `payload_a` and the key are not affected: A seals `payload_a` only after opening a msg2,
+which needs the invitation. Applications should therefore put in `payload_b` nothing whose
+confidentiality must outlast a quantum computer: public keys, or capabilities rotated once the
+handshake completes. The symbolic model found this case (`formal/quantum.pv`).
 
 Authentication rests on CPace and the safety words. CPace is not post-quantum, but it is
 "quantum-annoying" [CPACE] section 10.12: with a fresh `sid` and the context in `CI`, a quantum

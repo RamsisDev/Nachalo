@@ -14,10 +14,21 @@ devices agree on a shared key, exchange one payload each way, and let the people
 sitting in the middle. No accounts, no servers of its own, no identifiers on the wire, and a key
 that stays secret against a future quantum computer.
 
-> [!WARNING]
-> Nachalo is a draft (`v0`). The wire format may still change, and neither the protocol nor the
-> reference implementation has been audited or formally verified. **Do not rely on it for real
-> protection yet.**
+> [!IMPORTANT]
+> Nachalo is a draft (`v0`), and the wire format may still change. Neither the protocol nor the
+> reference implementation has been audited. A [symbolic model in ProVerif](formal/README.md)
+> checks the handshake in each mode, but it does not cover:
+>
+> - the probabilities of [section 11](spec/nachalo.md#11-security-considerations): the bound on
+>   online guesses and the 2^-38 of the safety words;
+> - time windows, expiries and `max_answers`;
+> - the bits of the words that a rendezvous id reveals;
+> - CPace, X25519, ML-KEM-768 and the hashes as they are, rather than ideal primitives;
+> - the reference implementation and the bindings themselves.
+>
+> The model also found that against a future quantum computer, B's payload is protected only by
+> CPace when the attacker sent msg1 itself ([details](formal/README.md#findings)). There is no
+> computational proof yet.
 
 ## Why
 
@@ -71,7 +82,9 @@ covers the full threat model.
 | [`vectors/`](vectors/) | Test vectors: one full handshake per mode, with every random value fixed, and messages and times that must be rejected. |
 | [`docs/`](docs/README.md) | A guide to the protocol and each invitation mode. |
 | [`src/`](src/) | The reference implementation, a Rust crate. |
+| [`benches/`](benches/), [`fuzz/`](fuzz/) | Benchmarks of each step, and fuzz targets for the messages, words and saved state. |
 | [`bindings/`](#bindings) | Bindings for TypeScript, Kotlin, Swift and Go, over the same crate. |
+| [`formal/`](formal/README.md) | A symbolic model of the handshake in ProVerif, with what it checks and what it leaves out. |
 
 Nachalo is a protocol, not a library. Anyone can implement it from the specification and check
 their implementation against the test vectors. Where the reference implementation and the
@@ -168,6 +181,9 @@ objects that hold secrets.
 cargo test --workspace                      # unit tests, CPace draft vectors, Nachalo vectors, doc examples
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
+cargo audit                                 # known vulnerabilities in dependencies; needs cargo-audit
+bindings/go/generate.sh                     # regenerate the Go package after a change to bindings/uniffi
+formal/check.sh                             # the ProVerif models, about 15 minutes; needs ProVerif 2.05
 NACHALO_WRITE_VECTORS=1 cargo test vectors  # rewrite vectors/ after a deliberate change
 cargo bench                                 # cost of each step
 cargo +nightly fuzz run respond             # or finish_a, finish_b, words, state; needs cargo-fuzz
@@ -182,7 +198,11 @@ Issues and pull requests are welcome, from typo fixes to independent implementat
 - **Protocol changes start in the specification.** Open an issue describing the problem first;
   a change to `spec/nachalo.md` usually means new test vectors and a change to the reference
   implementation in the same pull request.
-- **Code changes** must pass `cargo fmt`, `cargo clippy` and `cargo test`, as CI checks.
+- **Code changes** must pass `cargo fmt`, `cargo clippy`, `cargo test` and `cargo audit`, as CI
+  checks.
+- **Changes to `bindings/uniffi`** must also pass its Kotlin and Swift tests, in
+  `bindings/uniffi/tests`, and come with the Go code that `bindings/go/generate.sh` regenerates
+  from them. CI fails if the committed Go code differs from what it produces.
 - **Implementations in other languages** are especially welcome. Tell us about yours in an issue,
   and report anything in the specification that was unclear or ambiguous.
 
