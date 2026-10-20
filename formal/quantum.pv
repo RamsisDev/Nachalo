@@ -1,0 +1,51 @@
+(* Harvest now, decrypt later (spec sections 11.4 and 11.5). The attacker records and tampers
+   with handshakes today. Later (phase 1) it has a quantum computer, which recovers every CPace
+   scalar and X25519 key from the transcript, and it also learns the words. *)
+
+(* ProVerif leaves some attacker facts unresolved to terminate, and would report the expected
+   attacks below as "cannot be proved"; resolving them a few times lets it rebuild the traces. *)
+set nounifIgnoreAFewTimes = auto.
+
+free context: bitstring.
+free words, words_broken: bitstring [private].
+free payload_a, payload_b, secret_a, secret_b: bitstring [private].
+free payload_a_broken, payload_b_broken, secret_a_broken, secret_b_broken: bitstring [private].
+
+(* ML-KEM-768 alone keeps the keys, and A's payload, secret. *)
+query attacker(payload_a).
+query attacker(secret_a).
+query attacker(secret_b).
+
+(* Expected attack. B seals its payload in msg2, before it knows who sent msg1. An attacker that
+   sends msg1 today with its own ML-KEM key knows ss_kem, so only CPace protects that msg2:
+   later, with the words and a quantum computer, the attacker recovers B's CPace scalar and
+   reads payload_b. Without the words, this costs one discrete logarithm per guess, offline. *)
+query attacker(payload_b).
+
+(* Sanity: if ML-KEM fell too, the keys and A's payload would leak. *)
+query attacker(payload_a_broken).
+query attacker(secret_a_broken).
+
+let Invitation(prs: bitstring, pa: bitstring, pb: bitstring, sa: bitstring, sb: bitstring,
+               qk: bitstring, qk_kem: bitstring) =
+  new sas: channel; new sas_ok: channel;
+  let ci = (PROTOCOL, context) in
+  (!Initiator(prs, ci, pa, sa, sas, sas_ok, qk, qk_kem))
+  | (!Responder(prs, ci, pb, sb, sas, sas_ok, qk, qk_kem)).
+
+process
+  new qk: bitstring; new qk_kem: bitstring;
+  new qk_broken: bitstring; new qk_kem_broken: bitstring;
+  Invitation(words, payload_a, payload_b, secret_a, secret_b, qk, qk_kem)
+  | Invitation(words_broken, payload_a_broken, payload_b_broken, secret_a_broken,
+               secret_b_broken, qk_broken, qk_kem_broken)
+  | (phase 1; out(c, (words, words_broken, qk, qk_broken, qk_kem_broken)))
+
+(* Expected results:
+RESULT not attacker_p1(payload_a[]) is true.
+RESULT not attacker_p1(secret_a[]) is true.
+RESULT not attacker_p1(secret_b[]) is true.
+RESULT not attacker_p1(payload_b[]) is false.
+RESULT not attacker_p1(payload_a_broken[]) is false.
+RESULT not attacker_p1(secret_a_broken[]) is false.
+*)

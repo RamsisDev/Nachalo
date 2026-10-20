@@ -1,0 +1,46 @@
+(* An attacker that knows the words (spec section 11.3): it can sit in the middle and complete a
+   handshake with each side, but the safety words catch it. The model treats safety words as
+   collision-free, so it shows that no attack exists beyond guessing them; the 2^-38 bound of
+   section 11.3 is a probability ProVerif cannot express. *)
+
+(* ProVerif leaves some attacker facts unresolved to terminate, and would report the expected
+   attacks below as "cannot be proved"; resolving them a few times lets it rebuild the traces. *)
+set nounifIgnoreAFewTimes = auto.
+
+free context: bitstring.
+free words: bitstring.
+free payload_a, payload_b, secret_a, secret_b: bitstring [private].
+
+(* Once A has typed matching safety words, B finished the very same handshake, and B only
+   confirms a handshake A confirmed, with the same key. *)
+query p: bitstring, ci: bitstring, m1: bitstring, m2: bitstring, m3: bitstring, k: bitstring;
+  event(AConfirmed(p, ci, h((PROTOCOL, m1, m2, m3)), k)) ==> event(BFinished(p, ci, m1, m2, m3)).
+query p: bitstring, ci: bitstring, th: bitstring, k: bitstring;
+  event(BConfirmed(p, ci, th, k)) ==> event(AConfirmed(p, ci, th, k)).
+
+(* The key of a confirmed handshake stays secret, though the attacker knows the words. *)
+query attacker(secret_a).
+query attacker(secret_b).
+
+(* Expected attacks: before the safety words, A may be talking to the attacker, which then
+   learns the payloads (spec section 9). *)
+query p: bitstring, ci: bitstring, m1: bitstring, m2: bitstring, m3: bitstring;
+  event(AFinished(p, ci, m1, m2, m3)) ==> event(BResponded(p, ci, m1, m2)).
+query attacker(payload_a).
+query attacker(payload_b).
+
+process
+  new sas: channel; new sas_ok: channel; new qk: bitstring; new qk_kem: bitstring;
+  let ci = (PROTOCOL, context) in
+  (!Initiator(words, ci, payload_a, secret_a, sas, sas_ok, qk, qk_kem))
+  | (!Responder(words, ci, payload_b, secret_b, sas, sas_ok, qk, qk_kem))
+
+(* Expected results:
+RESULT event(AConfirmed(p,ci_1,h((PROTOCOL,m1,m2,m3)),k)) ==> event(BFinished(p,ci_1,m1,m2,m3)) is true.
+RESULT event(BConfirmed(p,ci_1,th_2,k)) ==> event(AConfirmed(p,ci_1,th_2,k)) is true.
+RESULT not attacker(secret_a[]) is true.
+RESULT not attacker(secret_b[]) is true.
+RESULT event(AFinished(p,ci_1,m1,m2,m3)) ==> event(BResponded(p,ci_1,m1,m2)) is false.
+RESULT not attacker(payload_a[]) is false.
+RESULT not attacker(payload_b[]) is false.
+*)

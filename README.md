@@ -196,7 +196,8 @@ Report it privately through
 
 ## Roadmap
 
-- Formal model of v0 (ProVerif or Tamarin).
+- Formal model of v0: a symbolic model in ProVerif is in [`formal/`](formal/README.md); a
+  computational proof is still missing.
 - Reference implementation: a C ABI.
 
 ## License

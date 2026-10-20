@@ -1,0 +1,46 @@
+(* Appointment mode (spec section 6.2), against an attacker that knows neither group of words.
+   The same 9 words are reused for an appointment at another time, as people might after a
+   missed one. appointment-leaks.pv covers one group leaking. *)
+
+free context: bitstring.
+free at, at_other: bitstring.
+free wa, wb: bitstring [private].
+free payload_a, payload_b, secret_a, secret_b: bitstring [private].
+
+weaksecret wa.
+weaksecret wb.
+
+query attacker(payload_a).
+query attacker(payload_b).
+query attacker(secret_a).
+query attacker(secret_b).
+
+(* Messages for one start time never complete with an invitation for another: both sides of a
+   finished handshake agree on CI, which holds at. *)
+query p: bitstring, ci: bitstring, m1: bitstring, m2: bitstring, m3: bitstring;
+  inj-event(AFinished(p, ci, m1, m2, m3)) ==> inj-event(BResponded(p, ci, m1, m2)).
+query p: bitstring, ci: bitstring, m1: bitstring, m2: bitstring, m3: bitstring;
+  inj-event(BFinished(p, ci, m1, m2, m3)) ==> inj-event(AFinished(p, ci, m1, m2, m3)).
+
+query p: bitstring, ci: bitstring, th: bitstring, k: bitstring; event(BConfirmed(p, ci, th, k)).
+
+process
+  new sas: channel; new sas_ok: channel; new qk: bitstring; new qk_kem: bitstring;
+  let prs = (wa, wb) in
+  let ci = (PROTOCOL, context, L_APPOINTMENT, at) in
+  let ci_other = (PROTOCOL, context, L_APPOINTMENT, at_other) in
+  (!Initiator(prs, ci, payload_a, secret_a, sas, sas_ok, qk, qk_kem))
+  | (!Responder(prs, ci, payload_b, secret_b, sas, sas_ok, qk, qk_kem))
+  | (!Responder(prs, ci_other, payload_b, secret_b, sas, sas_ok, qk, qk_kem))
+
+(* Expected results:
+RESULT Weak secret wa is true.
+RESULT Weak secret wb is true.
+RESULT not attacker(payload_a[]) is true.
+RESULT not attacker(payload_b[]) is true.
+RESULT not attacker(secret_a[]) is true.
+RESULT not attacker(secret_b[]) is true.
+RESULT inj-event(AFinished(p,ci_1,m1,m2,m3)) ==> inj-event(BResponded(p,ci_1,m1,m2)) is true.
+RESULT inj-event(BFinished(p,ci_1,m1,m2,m3)) ==> inj-event(AFinished(p,ci_1,m1,m2,m3)) is true.
+RESULT not event(BConfirmed(p,ci_1,th_3,k)) is false.
+*)

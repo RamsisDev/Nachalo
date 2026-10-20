@@ -1,0 +1,39 @@
+(* Live mode (spec section 6.1), against a network attacker that does not know the words. *)
+
+free context: bitstring.
+free words: bitstring [private].
+free payload_a, payload_b, secret_a, secret_b: bitstring [private].
+
+(* No offline test of the words, from any transcript, passive or active. *)
+weaksecret words.
+
+query attacker(payload_a).
+query attacker(payload_b).
+query attacker(secret_a).
+query attacker(secret_b).
+
+(* Each side only finishes against the other: the PAKE authenticates both. *)
+query prs: bitstring, ci: bitstring, m1: bitstring, m2: bitstring, m3: bitstring;
+  inj-event(AFinished(prs, ci, m1, m2, m3)) ==> inj-event(BResponded(prs, ci, m1, m2)).
+query prs: bitstring, ci: bitstring, m1: bitstring, m2: bitstring, m3: bitstring;
+  inj-event(BFinished(prs, ci, m1, m2, m3)) ==> inj-event(AFinished(prs, ci, m1, m2, m3)).
+
+(* Sanity: an honest handshake does reach confirmation on both sides. *)
+query prs: bitstring, ci: bitstring, th: bitstring, k: bitstring; event(BConfirmed(prs, ci, th, k)).
+
+process
+  new sas: channel; new sas_ok: channel; new qk: bitstring; new qk_kem: bitstring;
+  let ci = (PROTOCOL, context) in
+  (!Initiator(words, ci, payload_a, secret_a, sas, sas_ok, qk, qk_kem))
+  | (!Responder(words, ci, payload_b, secret_b, sas, sas_ok, qk, qk_kem))
+
+(* Expected results:
+RESULT Weak secret words is true.
+RESULT not attacker(payload_a[]) is true.
+RESULT not attacker(payload_b[]) is true.
+RESULT not attacker(secret_a[]) is true.
+RESULT not attacker(secret_b[]) is true.
+RESULT inj-event(AFinished(prs_2,ci_1,m1,m2,m3)) ==> inj-event(BResponded(prs_2,ci_1,m1,m2)) is true.
+RESULT inj-event(BFinished(prs_2,ci_1,m1,m2,m3)) ==> inj-event(AFinished(prs_2,ci_1,m1,m2,m3)) is true.
+RESULT not event(BConfirmed(prs_2,ci_1,th_2,k)) is false.
+*)

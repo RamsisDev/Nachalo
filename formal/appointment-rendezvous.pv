@@ -1,0 +1,24 @@
+(* Expected attack: an appointment's rendezvous id, if it came from all of A's words in full, would
+   be an offline test of them once B's words leak. The real id keeps only 16 bits of them, which
+   section 11.2 counts; ProVerif cannot express a partial leak, so it finds the full test. *)
+
+free context: bitstring.
+free at: bitstring.
+free payload_a, payload_b, secret_a, secret_b: bitstring [private].
+free wa: bitstring [private].
+free wb: bitstring.
+weaksecret wa.
+
+let Appointment(words_a: bitstring, words_b: bitstring, publish_rendezvous: bool) =
+  new sas: channel; new sas_ok: channel; new qk: bitstring; new qk_kem: bitstring;
+  let prs = (words_a, words_b) in
+  let ci = (PROTOCOL, context, L_APPOINTMENT, at) in
+  (if publish_rendezvous then out(c, hkdf(ci, hkdf(ci, words_a, L_RV_TAG), L_RV)))
+  | (!Initiator(prs, ci, payload_a, secret_a, sas, sas_ok, qk, qk_kem))
+  | (!Responder(prs, ci, payload_b, secret_b, sas, sas_ok, qk, qk_kem)).
+
+process Appointment(wa, wb, true)
+
+(* Expected results:
+RESULT Weak secret wa is false.
+*)

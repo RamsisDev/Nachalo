@@ -1,0 +1,25 @@
+(* Appointment mode (spec sections 6.2 and 11.2) when B's words leak: A's words must still admit
+   no offline test. The rendezvous id carries 16 bits of A's words, and ProVerif cannot express
+   a partial leak: published, it is a full offline test of A's words (appointment-rendezvous.pv).
+   So this model leaves it out, and section 11.2 counts the bits instead. *)
+
+free context: bitstring.
+free at: bitstring.
+free payload_a, payload_b, secret_a, secret_b: bitstring [private].
+free wa: bitstring [private].
+free wb: bitstring.
+weaksecret wa.
+
+let Appointment(words_a: bitstring, words_b: bitstring, publish_rendezvous: bool) =
+  new sas: channel; new sas_ok: channel; new qk: bitstring; new qk_kem: bitstring;
+  let prs = (words_a, words_b) in
+  let ci = (PROTOCOL, context, L_APPOINTMENT, at) in
+  (if publish_rendezvous then out(c, hkdf(ci, hkdf(ci, words_a, L_RV_TAG), L_RV)))
+  | (!Initiator(prs, ci, payload_a, secret_a, sas, sas_ok, qk, qk_kem))
+  | (!Responder(prs, ci, payload_b, secret_b, sas, sas_ok, qk, qk_kem)).
+
+process Appointment(wa, wb, false)
+
+(* Expected results:
+RESULT Weak secret wa is true.
+*)

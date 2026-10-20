@@ -1,0 +1,26 @@
+name: formal
+
+# The ProVerif models take about 15 minutes, so they run when a release is published, not on
+# every push. They can also be run by hand from the Actions tab.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  proverif:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ocaml-nox
+      - name: Build ProVerif 2.05
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfLO https://bblanche.gitlabpages.inria.fr/proverif/proverif2.05.tar.gz
+          echo "4871f53c32ab4a04669a060c4886ba5d9080496963fb980a9a62d2c429ceabc4  proverif2.05.tar.gz" | sha256sum -c
+          tar xzf proverif2.05.tar.gz
+          cd proverif2.05 && ./build -nointeract
+      - run: bash formal/check.sh
+        env:
+          PROVERIF: ${{ runner.temp }}/proverif2.05/proverif

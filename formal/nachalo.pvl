@@ -1,0 +1,135 @@
+(* Nachalo v0: primitives and the two roles of the handshake (spec sections 7 and 8).
+   Every model in this directory loads this library with -lib. *)
+
+free c: channel.
+
+type G.
+type exponent.
+type kemsk.
+type kempk.
+
+(* Labels (spec section 3). *)
+const PROTOCOL, L_RV_TAG, L_RV, L_COMMIT, L_SEAL_B, L_SEAL_A, L_KEY, L_SAFETY,
+      L_APPOINTMENT, L_TOKEN, L_ISK: bitstring.
+
+(* X25519: Diffie-Hellman on the fixed base point. *)
+const g9: G.
+fun exp(G, exponent): G.
+equation forall x: exponent, y: exponent; exp(exp(g9, x), y) = exp(exp(g9, y), x).
+
+(* CPace over ristretto255. The generator is a hash of the password, the channel identifier
+   and the session_id, so anyone can compute it for a guess. A commuting equation on a variable base
+   keeps ProVerif from terminating, so the shared point is cpace_dh(g, y, y'), symmetric in the
+   two scalars: cpace_k gives it to whoever holds one scalar and the other share on the same
+   generator. A share on another generator (a wrong guess) gives an unrelated point, as
+   scalar_mult_vfy does, not an error. *)
+fun cpace_generator(bitstring, bitstring, bitstring): G.
+fun cpace_share(G, exponent): G.
+fun cpace_dh(G, exponent, exponent): G.
+equation forall g: G, x: exponent, y: exponent; cpace_dh(g, x, y) = cpace_dh(g, y, x).
+fun cpace_garbage(G, G, exponent): G [private].
+fun cpace_k(G, G, exponent): G
+reduc forall g: G, x: exponent, y: exponent;
+    cpace_k(g, cpace_share(g, x), y) = cpace_dh(g, x, y)
+  otherwise forall g: G, Y: G, y: exponent;
+    cpace_k(g, Y, y) = cpace_garbage(g, Y, y).
+
+(* ML-KEM-768. Encapsulation is deterministic in m, so whoever knows m knows ss_kem. *)
+fun kem_ek(kemsk): kempk.
+fun kem_ct(kempk, bitstring): bitstring.
+fun kem_ss(kempk, bitstring): bitstring.
+reduc forall dk: kemsk, m: bitstring;
+  kem_decaps(dk, kem_ct(kem_ek(dk), m)) = kem_ss(kem_ek(dk), m).
+
+(* SHA-256 (T and the commitment), SHA-512 (ISK) and HKDF as random oracles. Tuples stand for
+   lv_cat, which is injective. *)
+fun h(bitstring): bitstring.
+fun hkdf(bitstring, bitstring, bitstring): bitstring.
+
+(* ChaCha20-Poly1305 with a single-use key. *)
+fun seal(bitstring, bitstring): bitstring.
+reduc forall k: bitstring, p: bitstring; open(k, seal(k, p)) = p.
+
+(* prs and ci identify the invitation in every event. *)
+event AFinished(bitstring, bitstring, bitstring, bitstring, bitstring).
+event BResponded(bitstring, bitstring, bitstring, bitstring).
+event BFinished(bitstring, bitstring, bitstring, bitstring, bitstring).
+event AConfirmed(bitstring, bitstring, bitstring, bitstring).
+event BConfirmed(bitstring, bitstring, bitstring, bitstring).
+
+(* sas carries the safety words B shows to A, and sas_ok A's "they match" back to B: the two
+   people recognize each other there, so the attacker cannot write to them. The safety words are
+   not secret, so B also publishes them. After confirming, each side seals a secret under the
+   key: the attacker learns it only if it learns the key.
+
+   Each role also publishes its ephemeral secrets sealed under two keys: qk for the CPace scalar
+   and the X25519 key, which a quantum computer recovers from the transcript, and qk_kem for the
+   ML-KEM secret. Only quantum.pv ever reveals them, in its second phase. *)
+
+fun kem_secret(kemsk): bitstring [data].
+
+let Initiator(prs: bitstring, ci: bitstring, payload_a: bitstring, secret_a: bitstring,
+              sas: channel, sas_ok: channel, qk: bitstring, qk_kem: bitstring) =
+  new session_id: bitstring;
+  new ya: exponent;
+  new xa: exponent;
+  new dk: kemsk;
+  new nonce: bitstring;
+  let g = cpace_generator(prs, ci, session_id) in
+  let Ya = cpace_share(g, ya) in
+  let Xa = exp(g9, xa) in
+  let ek = kem_ek(dk) in
+  let commitment = h((L_COMMIT, nonce, payload_a)) in
+  let msg1 = (session_id, Ya, Xa, commitment, ek) in
+  out(c, msg1);
+  out(c, seal(qk, (ya, xa)));
+  out(c, seal(qk_kem, kem_secret(dk)));
+  in(c, msg2: bitstring);
+  let (Yb: G, Xb: G, ct: bitstring, sealed_b: bitstring) = msg2 in
+  let isk = h((L_ISK, session_id, cpace_k(g, Yb, ya), Ya, (Xa, commitment, ek), Yb, (Xb, ct))) in
+  let ikm = (isk, exp(Xb, xa), kem_decaps(dk, ct)) in
+  let payload_b = open(hkdf(h((PROTOCOL, msg1, (Yb, Xb, ct))), ikm, L_SEAL_B), sealed_b) in
+  let msg3 = seal(hkdf(h((PROTOCOL, msg1, msg2)), ikm, L_SEAL_A), (nonce, payload_a)) in
+  event AFinished(prs, ci, msg1, msg2, msg3);
+  out(c, msg3);
+  let th = h((PROTOCOL, msg1, msg2, msg3)) in
+  let key = hkdf(th, ikm, L_KEY) in
+  in(sas, typed: bitstring);
+  if typed = hkdf(th, ikm, L_SAFETY) then
+  event AConfirmed(prs, ci, th, key);
+  out(sas_ok, typed);
+  out(c, seal(key, secret_a)).
+
+let Responder(prs: bitstring, ci: bitstring, payload_b: bitstring, secret_b: bitstring,
+              sas: channel, sas_ok: channel, qk: bitstring, qk_kem: bitstring) =
+  in(c, msg1: bitstring);
+  let (session_id: bitstring, Ya: G, Xa: G, commitment: bitstring, ek: kempk) = msg1 in
+  new yb: exponent;
+  new xb: exponent;
+  new m: bitstring;
+  let g = cpace_generator(prs, ci, session_id) in
+  let Yb = cpace_share(g, yb) in
+  let Xb = exp(g9, xb) in
+  let ct = kem_ct(ek, m) in
+  let isk = h((L_ISK, session_id, cpace_k(g, Ya, yb), Ya, (Xa, commitment, ek), Yb, (Xb, ct))) in
+  let ikm = (isk, exp(Xa, xb), kem_ss(ek, m)) in
+  let msg2 = (Yb, Xb, ct,
+              seal(hkdf(h((PROTOCOL, msg1, (Yb, Xb, ct))), ikm, L_SEAL_B), payload_b)) in
+  event BResponded(prs, ci, msg1, msg2);
+  out(c, msg2);
+  out(c, seal(qk, (yb, xb)));
+  out(c, seal(qk_kem, m));
+  in(c, msg3: bitstring);
+  let (nonce: bitstring, payload_a: bitstring) =
+    open(hkdf(h((PROTOCOL, msg1, msg2)), ikm, L_SEAL_A), msg3) in
+  if h((L_COMMIT, nonce, payload_a)) = commitment then
+  let th = h((PROTOCOL, msg1, msg2, msg3)) in
+  let key = hkdf(th, ikm, L_KEY) in
+  let safety = hkdf(th, ikm, L_SAFETY) in
+  event BFinished(prs, ci, msg1, msg2, msg3);
+  out(c, safety);
+  out(sas, safety);
+  in(sas_ok, said: bitstring);
+  if said = safety then
+  event BConfirmed(prs, ci, th, key);
+  out(c, seal(key, secret_b)).
