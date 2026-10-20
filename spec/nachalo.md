@@ -136,7 +136,7 @@ Labels, used as HKDF `info` or inside hashes:
   the wall clock, which the network can move.
 - `now_unix`: the device's wall clock, in seconds since the Unix epoch. Appointment and
   physical-token invitations check it when the invitation is built and whenever a step starts or
-  continues (section 6).
+  continues, and every step's `ttl` also runs on it (section 6).
 
 In what follows, A is the initiator, which sends msg1 and msg3, and B the responder. In the live
 and appointment modes A is the person who drew the first words; in the physical-token mode the
@@ -191,11 +191,12 @@ if now_unix is outside the window: stop
 ttl = min(invite_ttl, expires - now_unix)          just invite_ttl for live
 ```
 
-A pending step then dies at `deadline = now + ttl` on the monotonic clock, or once
-`now_unix > expires`, whichever comes first. Checking the wall clock at every step, not only when
-the invitation is built, keeps an invitation held in memory from outliving its window, and keeps a
-long-lived token valid exactly until its expiry, even on a monotonic clock that stops while the
-device is suspended.
+A pending step then dies once `ttl` has passed on either clock: at `now + ttl` on the monotonic
+clock or at `now_unix + ttl` on the wall clock, both read when it started, whichever comes first.
+Since `ttl` never reaches past `expires`, that also ends it with its window. Checking the wall
+clock at every step, not only when the invitation is built, keeps an invitation held in memory
+from outliving its window, and keeps a long-lived token valid exactly until its expiry, even on a
+monotonic clock that stops while the device is suspended or starts over when it restarts.
 
 The two devices must find each other's messages without any identifier. A posts msg1 at
 `rendezvous` and B looks for it there. The application maps the 32-byte id onto its transport: a
@@ -279,6 +280,11 @@ msg1 A->B | sid 16 | Ya 32 | Xa 32 | commitment 32 | ek 1184 |               129
 msg2 B->A | Yb 32 | Xb 32 | ct 1088 | sealed_b (len(payload_b) + 16) |     1168 + len(payload_b)
 msg3 A->B | sealed_a (32 + len(payload_a) + 16) |                          48 + len(payload_a)
 ```
+
+Messages carry no version or type byte. Every version derives its rendezvous ids, keys and tags
+from its own `PROTOCOL`, so messages of two versions never meet at one rendezvous, and if they do,
+they fail like any forged message. A later version that must share v0's rendezvous ids adds its
+own marker.
 
 The lengths of msg2 and msg3 reveal the payload lengths. Receivers reject any message whose
 length is not one of the lengths allowed for payloads from 0 to `PAYLOAD_CEILING` bytes. A
@@ -406,7 +412,7 @@ sent) and starts over with new words.
   sent that msg1, so B must answer at most `max_answers` msg1 per invitation; the reference
   implementation enforces it. The same cap bounds a man in the middle's chance of matching the
   safety words (section 11.3).
-- Each pending step dies `ttl` after it started, on its own device's clock: `invite_ttl`, or less
+- Each pending step dies `ttl` after it started, on its own device's clocks: `invite_ttl`, or less
   near the end of an appointment window or before a token expires. No time travels on the wire,
   so the two clocks never need to agree; the appointment and physical-token modes also check the
   wall clock whenever a step starts or continues.
@@ -523,8 +529,10 @@ Applications that must hide this wrap messages in fixed-size, encrypted frames o
 ### 11.9. Implementation
 
 Secret values (words, scalars, private keys, `ISK`, `ikm`, nonces) should be erased after use.
-Comparisons of tags and commitments must be constant time. Error results should not say which
-check failed.
+Comparisons of tags and commitments must be constant time, and so should looking up typed words
+in the list and list words by index. Error results should not say which check failed. A device
+that saves a pending step, to survive a restart, holds that step's secrets in the saved state and
+must store it encrypted.
 
 ## 12. Test vectors
 
@@ -534,6 +542,12 @@ the order of section 7, the intermediate values (rendezvous, CPace generator, tr
 shared secrets, `ikm`, commitment, transcript hashes, seal keys and safety bytes), the three
 messages and the outputs. An implementation that injects those random
 values must reproduce every byte. The local parameters (section 3.1) do not affect them.
+
+`vectors/v0-negative.json` holds inputs that must fail, each one change away from those
+handshakes: messages of the wrong length, with a share that is not a point or of low order, an
+`ek` that fails the FIPS 203 check, a broken tag, or a msg3 that does not open the commitment,
+each rejected; and appointment and physical-token invitations used outside their window, each
+expired.
 
 The CPace layer can be checked on its own against [CPACE] appendix B.3.
 

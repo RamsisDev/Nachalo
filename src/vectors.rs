@@ -3,7 +3,12 @@
 //! implementation can check itself byte by byte. The intermediate values are recomputed here
 //! from the messages, apart from the code that produced them.
 //!
+//! `vectors/v0-negative.json` holds messages and times that must be refused, each one change away
+//! from those handshakes.
+//!
 //! `NACHALO_WRITE_VECTORS=1 cargo test vectors` rewrites the files; otherwise they are checked.
+
+use std::ops::Range;
 
 use libcrux_ml_kem::mlkem768;
 use serde_json::{Value, json};
@@ -42,19 +47,26 @@ fn h(bytes: &[u8]) -> Value {
     Value::String(hex::encode(bytes))
 }
 
-fn generate(invitation: &Invitation, inputs: Value) -> Value {
-    let ir = InitiatorRandom {
+fn initiator_random() -> InitiatorRandom {
+    InitiatorRandom {
         sid: fixed("initiator sid"),
         cpace: fixed("initiator cpace"),
         x25519: fixed("initiator x25519"),
         ml_kem: fixed("initiator ml-kem"),
         nonce: fixed("initiator nonce"),
-    };
-    let rr = ResponderRandom {
+    }
+}
+
+fn responder_random() -> ResponderRandom {
+    ResponderRandom {
         cpace: fixed("responder cpace"),
         x25519: fixed("responder x25519"),
         ml_kem: fixed("responder ml-kem"),
-    };
+    }
+}
+
+fn generate(invitation: &Invitation, inputs: Value) -> Value {
+    let (ir, rr) = (initiator_random(), responder_random());
     let random = json!({
         "initiator": {
             "sid": h(&ir.sid),
@@ -179,10 +191,15 @@ fn appointment() -> Value {
     generate(&invitation, inputs)
 }
 
-fn token() -> Value {
+fn fixed_token() -> [u8; TOKEN_LEN] {
     let mut token = [0u8; TOKEN_LEN];
     token[..TOKEN_SECRET_LEN].copy_from_slice(&fixed::<TOKEN_SECRET_LEN>("physical token secret"));
     token[TOKEN_SECRET_LEN..].copy_from_slice(&(AT + 3600).to_be_bytes());
+    token
+}
+
+fn token() -> Value {
+    let token = fixed_token();
     let inputs = json!({
         "words": WORDS,
         "token": h(&token),
@@ -197,12 +214,133 @@ fn token() -> Value {
     )
 }
 
+/// `msg` with `range` replaced by `bytes`.
+fn edit(msg: &[u8], range: Range<usize>, bytes: &[u8]) -> Vec<u8> {
+    let mut out = msg.to_vec();
+    out.splice(range, bytes.iter().copied());
+    out
+}
+
+fn negative() -> Value {
+    // Decodes to no ristretto255 point: draft-irtf-cfrg-cpace-21, appendix B.3.11.
+    let not_a_point =
+        hex::decode("2b3c6b8c4f3800e7aef6864025b4ed79bd599117e427c41bd47d93d654b4a51c").unwrap();
+    let config = Config::default();
+    let invitation = Invitation::live(WORDS, CONTEXT, &config).unwrap();
+    let start = || Initiator::start_with(&invitation, PAYLOAD_A, NOW, initiator_random()).unwrap();
+    let respond = |msg1: &[u8]| {
+        Responder::respond_with(&invitation, msg1, PAYLOAD_B, NOW, responder_random())
+    };
+    let (_, msg1) = start();
+    let (b, msg2) = respond(&msg1).unwrap();
+    let (_, msg3) = start().0.finish(&msg2, NOW).unwrap();
+    let mut other_payload = start().0;
+    other_payload.payload = Zeroizing::new(b"not the committed payload".to_vec());
+    let (_, broken) = other_payload.finish(&msg2, NOW).unwrap();
+    let flip_last = |msg: &[u8]| edit(msg, msg.len() - 1..msg.len(), &[msg[msg.len() - 1] ^ 1]);
+
+    let messages = [
+        (
+            "msg1 one byte short",
+            "respond",
+            msg1[..MSG1_LEN - 1].to_vec(),
+        ),
+        (
+            "msg1 Ya not a point",
+            "respond",
+            edit(&msg1, YA_AT..XA_AT, &not_a_point),
+        ),
+        (
+            "msg1 Ya the identity",
+            "respond",
+            edit(&msg1, YA_AT..XA_AT, &[0; 32]),
+        ),
+        (
+            "msg1 Xa of low order",
+            "respond",
+            edit(&msg1, XA_AT..COMMIT_AT, &[0; 32]),
+        ),
+        // The first coefficient of ek becomes 4095, not reduced mod q = 3329.
+        (
+            "msg1 ek fails the FIPS 203 check",
+            "respond",
+            edit(&msg1, EK_AT..EK_AT + 2, &[0xff; 2]),
+        ),
+        (
+            "msg2 one byte short",
+            "finish_a",
+            msg2[..msg2_len(0) - 1].to_vec(),
+        ),
+        (
+            "msg2 Yb not a point",
+            "finish_a",
+            edit(&msg2, 0..XB_AT, &not_a_point),
+        ),
+        (
+            "msg2 Xb of low order",
+            "finish_a",
+            edit(&msg2, XB_AT..CT_AT, &[0; 32]),
+        ),
+        ("msg2 tag flipped", "finish_a", flip_last(&msg2)),
+        (
+            "msg3 one byte short",
+            "finish_b",
+            msg3[..msg3_len(0) - 1].to_vec(),
+        ),
+        ("msg3 tag flipped", "finish_b", flip_last(&msg3)),
+        (
+            "msg3 opens to a payload msg1 did not commit to",
+            "finish_b",
+            broken,
+        ),
+    ];
+    let mut cases: Vec<Value> = messages
+        .into_iter()
+        .map(|(name, step, msg)| {
+            let error = match step {
+                "respond" => respond(&msg).err(),
+                "finish_a" => start().0.finish(&msg, NOW).err(),
+                _ => b.finish(&msg, NOW).err(),
+            };
+            assert_eq!(error, Some(Error::Rejected), "{name}");
+            json!({ "name": name, "mode": "live", "step": step, "message": h(&msg), "error": "rejected" })
+        })
+        .collect();
+
+    let window = config.appointment_window.as_secs();
+    for (name, now_unix) in [
+        ("appointment before its window", AT - 1),
+        ("appointment after its window", AT + window + 1),
+    ] {
+        let built = Invitation::appointment(WORDS_A, WORDS_B, AT, CONTEXT, now_unix, &config);
+        assert_eq!(built.err(), Some(Error::Expired), "{name}");
+        cases.push(json!({ "name": name, "mode": "appointment", "step": "invitation", "now_unix": now_unix, "error": "expired" }));
+    }
+    let now_unix = AT + 3601;
+    let built = Invitation::physical_token(WORDS, &fixed_token(), CONTEXT, now_unix, &config);
+    assert_eq!(built.err(), Some(Error::Expired));
+    cases.push(json!({ "name": "physical token past its expiry", "mode": "physical-token", "step": "invitation", "now_unix": now_unix, "error": "expired" }));
+
+    json!({
+        "protocol": String::from_utf8_lossy(PROTOCOL),
+        "about": "Each case must fail at its step. Message cases start from v0.json: `respond` is B \
+                  answering the message with v0.json's responder random values, `finish_a` is A, \
+                  started with v0.json's initiator random values, receiving it as msg2, and \
+                  `finish_b` is B, after answering v0.json's msg1, receiving it as msg3. \
+                  `invitation` cases build the invitation of v0-appointment.json or \
+                  v0-physical-token.json at `now_unix`, with the default appointment_window of \
+                  1800 seconds. Byte strings are hex.",
+        "cases": cases,
+    })
+}
+
 #[test]
 fn vectors() {
     let modes = [
         ("v0.json", live as fn() -> Value),
         ("v0-appointment.json", appointment),
         ("v0-physical-token.json", token),
+        ("v0-negative.json", negative),
     ];
     for (file, generate) in modes {
         let path = format!("{DIR}{file}");

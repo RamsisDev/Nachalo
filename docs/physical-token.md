@@ -70,7 +70,7 @@ fn main() -> Result<(), nachalo::Error> {
     // In person: Alice's device makes a token valid for a week, and draws the words.
     let made_at = 1_900_000_000; // Alice's wall clock, Unix seconds
     let token = new_physical_token(7 * 24 * 3600, made_at)?;
-    let alice_words = words(6);
+    let alice_words = words(6)?;
 
     // Alice's device builds its invitation now and listens at its rendezvous id until expiry.
     let alice_invitation = Invitation::physical_token(&alice_words, &token, context, made_at, &config)?;

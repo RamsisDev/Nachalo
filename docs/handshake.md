@@ -129,9 +129,10 @@ allowed ranges (`Config::new(&Profile::...)`).
 
 Every step takes two clocks. `now` is in seconds from a **monotonic clock that keeps counting
 while the device sleeps**, for the step's TTL; only differences on the same device matter, so the
-two devices' clocks never need to agree. `now_unix` is the wall clock: the appointment and
-physical-token modes check it at every step, so an invitation kept in memory stops working when
-its window closes or its token expires.
+two devices' clocks never need to agree. `now_unix` is the wall clock. The TTL runs on it too, so
+a step saved with `to_bytes` and restored after a restart, which resets the monotonic clock,
+still expires on time. The appointment and physical-token modes check it at every step, so an
+invitation kept in memory stops working when its window closes or its token expires.
 
 ## What the application provides
 

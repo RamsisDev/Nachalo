@@ -71,8 +71,8 @@ fn main() -> Result<(), nachalo::Error> {
     let config = Config::default(); // a 30-minute window
 
     // Days before: each draws a group, and they swap them and agree on a time.
-    let alice_words = words(5);
-    let bob_words = words(4);
+    let alice_words = words(5)?;
+    let bob_words = words(4)?;
     let at = 1_900_000_020; // the agreed start, as Unix seconds
     let at = at - at % 60; // rounded to the minute
 

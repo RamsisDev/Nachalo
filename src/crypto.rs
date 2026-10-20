@@ -19,18 +19,25 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
+use crate::handshake::Error;
+
 pub const KEY_LEN: usize = 32;
 pub const TAG_LEN: usize = 16;
 /// ML-KEM-768 encapsulation key and ciphertext sizes.
 pub const EK_LEN: usize = 1184;
 pub const CT_LEN: usize = 1088;
 
+/// A 32-byte symmetric key.
 pub type Key = [u8; KEY_LEN];
 
-pub fn random<const N: usize>() -> [u8; N] {
+pub fn fill(out: &mut [u8]) -> Result<(), Error> {
+    getrandom::fill(out).map_err(|_| Error::Rng)
+}
+
+pub fn random<const N: usize>() -> Result<[u8; N], Error> {
     let mut out = [0u8; N];
-    getrandom::fill(&mut out).expect("OS random generator unavailable");
-    out
+    fill(&mut out)?;
+    Ok(out)
 }
 
 /// HKDF-SHA256 (RFC 5869).
@@ -90,7 +97,7 @@ mod tests {
 
     #[test]
     fn seal_open_roundtrip_and_tamper() {
-        let key = random::<KEY_LEN>();
+        let key = random::<KEY_LEN>().unwrap();
         let sealed = seal(&key, b"hello");
         assert_eq!(sealed.len(), 5 + TAG_LEN);
         assert_ne!(&sealed[..5], b"hello");
@@ -104,7 +111,7 @@ mod tests {
             tampered[at] ^= 1;
             assert!(open(&key, &tampered).is_none(), "flip at {at}");
         }
-        assert!(open(&random::<KEY_LEN>(), &sealed).is_none());
+        assert!(open(&random::<KEY_LEN>().unwrap(), &sealed).is_none());
         assert!(open(&key, &sealed[..TAG_LEN - 1]).is_none());
         assert_eq!(open(&key, &seal(&key, b"")).map(|p| p.len()), Some(0));
     }

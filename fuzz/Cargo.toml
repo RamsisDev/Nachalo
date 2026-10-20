@@ -1,0 +1,51 @@
+[package]
+name = "nachalo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nachalo = { path = ".." }
+
+# Its own workspace, so the crate's builds and `cargo publish` never see it.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "respond"
+path = "fuzz_targets/respond.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "finish_a"
+path = "fuzz_targets/finish_a.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "finish_b"
+path = "fuzz_targets/finish_b.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "words"
+path = "fuzz_targets/words.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "state"
+path = "fuzz_targets/state.rs"
+test = false
+doc = false
+bench = false

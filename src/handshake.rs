@@ -52,6 +52,7 @@ pub const PAYLOAD_CEILING: usize = 8192;
 /// Two bytes per safety word, 11 bits used: 4 words, 44 bits. Someone in the middle who gets
 /// B to answer `q` msg1 matches them with probability `q * 2^-44`.
 pub const SAFETY_LEN: usize = 8;
+/// Length of [`Invitation::rendezvous`].
 pub const RENDEZVOUS_LEN: usize = 32;
 /// Bytes of the words' hash the rendezvous id is derived from. Whoever watches that id learns at
 /// most these 24 bits of the words, and each answer is still a single online guess at the
@@ -74,6 +75,7 @@ const YA_AT: usize = SID_LEN;
 const XA_AT: usize = YA_AT + SHARE_LEN;
 const COMMIT_AT: usize = XA_AT + DH_LEN;
 const EK_AT: usize = COMMIT_AT + KEY_LEN;
+/// msg1 length, whatever the payload: it carries only a commitment to it.
 pub const MSG1_LEN: usize = EK_AT + EK_LEN;
 
 const XB_AT: usize = SHARE_LEN;
@@ -101,6 +103,7 @@ const LABEL_EXPORT: &[u8] = b"Nachalo v0 export";
 const LABEL_APPOINTMENT: &[u8] = b"Nachalo v0 appointment";
 const LABEL_TOKEN: &[u8] = b"Nachalo v0 physical token";
 
+/// Why a step failed. On purpose, a rejected message does not say which check it failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
@@ -115,6 +118,8 @@ pub enum Error {
     Rejected,
     /// A setting outside its profile's range, or a token expiry past the end of time.
     OutOfRange,
+    /// The OS random generator failed.
+    Rng,
 }
 
 /// The two clocks every step reads.
@@ -127,9 +132,9 @@ pub struct Clock {
     pub now_unix: u64,
 }
 
-/// When a pending step dies: on the monotonic clock, or at the end of its window or token on the
-/// wall clock, whichever comes first. The wall clock catches monotonic clocks that stop while the
-/// device sleeps.
+/// When a pending step dies: `ttl` after it started on the monotonic clock or on the wall clock,
+/// whichever comes first. The wall clock catches monotonic clocks that stop while the device
+/// sleeps, or restart with it while the step is saved (see [`Initiator::to_bytes`]).
 #[derive(Clone, Copy)]
 struct Deadline {
     now: u64,
@@ -142,6 +147,7 @@ impl Deadline {
     }
 }
 
+/// Which side of the handshake a device played.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     /// A: holds the words first, sends msg1 and msg3, types the safety words.
@@ -153,6 +159,7 @@ pub enum Role {
 /// What both sides derive from the shared secret of one invitation, in one of three modes:
 /// [`live`](Invitation::live), [`appointment`](Invitation::appointment) or
 /// [`physical_token`](Invitation::physical_token). Both sides must build it from the same inputs.
+#[derive(Clone)]
 pub struct Invitation {
     /// The CPace password.
     prs: Zeroizing<Vec<u8>>,
@@ -253,11 +260,14 @@ impl Invitation {
         if !self.valid_unix.contains(&clock.now_unix) {
             return Err(Error::Expired);
         }
-        let unix = *self.valid_unix.end();
-        let ttl = self.config.invite_ttl.as_secs().min(unix - clock.now_unix);
+        let ttl = self
+            .config
+            .invite_ttl
+            .as_secs()
+            .min(self.valid_unix.end() - clock.now_unix);
         Ok(Deadline {
             now: clock.now.saturating_add(ttl),
-            unix,
+            unix: clock.now_unix + ttl,
         })
     }
 }
@@ -271,8 +281,7 @@ pub fn new_physical_token(
 ) -> Result<Zeroizing<[u8; TOKEN_LEN]>, Error> {
     let expires = now_unix.checked_add(lifetime).ok_or(Error::OutOfRange)?;
     let mut token = Zeroizing::new([0u8; TOKEN_LEN]);
-    token[..TOKEN_SECRET_LEN]
-        .copy_from_slice(&*Zeroizing::new(crypto::random::<TOKEN_SECRET_LEN>()));
+    crypto::fill(&mut token[..TOKEN_SECRET_LEN])?;
     token[TOKEN_SECRET_LEN..].copy_from_slice(&expires.to_be_bytes());
     Ok(token)
 }
@@ -288,14 +297,14 @@ pub(crate) struct InitiatorRandom {
 }
 
 impl InitiatorRandom {
-    fn new() -> Self {
-        Self {
-            sid: crypto::random(),
-            cpace: crypto::random(),
-            x25519: crypto::random(),
-            ml_kem: crypto::random(),
-            nonce: crypto::random(),
-        }
+    fn new() -> Result<Self, Error> {
+        Ok(Self {
+            sid: crypto::random()?,
+            cpace: crypto::random()?,
+            x25519: crypto::random()?,
+            ml_kem: crypto::random()?,
+            nonce: crypto::random()?,
+        })
     }
 }
 
@@ -316,12 +325,12 @@ pub(crate) struct ResponderRandom {
 }
 
 impl ResponderRandom {
-    fn new() -> Self {
-        Self {
-            cpace: crypto::random(),
-            x25519: crypto::random(),
-            ml_kem: crypto::random(),
-        }
+    fn new() -> Result<Self, Error> {
+        Ok(Self {
+            cpace: crypto::random()?,
+            x25519: crypto::random()?,
+            ml_kem: crypto::random()?,
+        })
     }
 }
 
@@ -356,6 +365,7 @@ impl Transcript {
 const IKM_LEN: usize = cpace::ISK_LEN + 2 * KEY_LEN;
 type Ikm = Zeroizing<[u8; IKM_LEN]>;
 
+/// A's pending handshake, from [`Initiator::start`] until msg2 arrives.
 pub struct Initiator {
     y: Zeroizing<Scalar>,
     x: StaticSecret,
@@ -384,7 +394,7 @@ impl Initiator {
         payload: &[u8],
         clock: Clock,
     ) -> Result<(Initiator, Vec<u8>), Error> {
-        Self::start_with(invitation, payload, clock, InitiatorRandom::new())
+        Self::start_with(invitation, payload, clock, InitiatorRandom::new()?)
     }
 
     pub(crate) fn start_with(
@@ -428,6 +438,63 @@ impl Initiator {
     /// complete.
     pub fn deadline(&self) -> u64 {
         self.deadline.now
+    }
+
+    /// Saves this pending step, so [`Initiator::from_bytes`] resumes it after the app is killed
+    /// or the device restarts. Save it again after each [`finish`](Initiator::finish) that fails,
+    /// since each counts against `max_answers`. `finish` gives the same msg3 for the same msg2,
+    /// so the state saved before it also resumes the handshake after it.
+    ///
+    /// The state holds this side's secrets: whoever reads it can complete the handshake in its
+    /// place. Store it encrypted, for example in the iOS Keychain or the Android Keystore, and
+    /// erase it once the step ends. It starts with a version byte. A restart resets the
+    /// monotonic clock, so a restored step dies by the wall clock: `ttl` after it started.
+    /// The same holds for [`Responder::to_bytes`] and [`Listener::to_bytes`].
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let mut out = state(STATE_INITIATOR, 4096 + self.payload.len());
+        out.extend_from_slice(&*Zeroizing::new(self.y.to_bytes()));
+        out.extend_from_slice(&*Zeroizing::new(self.x.to_bytes()));
+        out.extend_from_slice(self.dk.as_slice());
+        out.extend_from_slice(&*self.nonce);
+        out.extend_from_slice(&self.msg1);
+        put_deadline(&mut out, self.deadline);
+        out.extend_from_slice(&self.answers.to_be_bytes());
+        out.extend_from_slice(&self.max_answers.to_be_bytes());
+        out.push(u8::from(self.finished));
+        put_bytes(&mut out, &self.payload);
+        out
+    }
+
+    /// Restores a step saved with [`Initiator::to_bytes`]; [`Error::Rejected`] if `bytes` is
+    /// not one.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes, STATE_INITIATOR)?;
+        let y = Option::from(Scalar::from_canonical_bytes(r.array()?)).ok_or(Error::Rejected)?;
+        let x = StaticSecret::from(r.array::<DH_LEN>()?);
+        let dk = r.take(MlKem768PrivateKey::len())?;
+        let nonce = Zeroizing::new(r.array()?);
+        let msg1 = r.take(MSG1_LEN)?.to_vec();
+        let deadline = r.deadline()?;
+        let (answers, max_answers) = (r.u16()?, r.u16()?);
+        let finished = match r.array()? {
+            [0] => false,
+            [1] => true,
+            _ => return Err(Error::Rejected),
+        };
+        let payload = Zeroizing::new(r.bytes()?.to_vec());
+        r.end()?;
+        Ok(Initiator {
+            y: Zeroizing::new(y),
+            x,
+            dk: dk.try_into().map_err(|_| Error::Rejected)?,
+            nonce,
+            payload,
+            msg1,
+            deadline,
+            answers,
+            max_answers,
+            finished,
+        })
     }
 
     /// Completes the handshake with B's msg2: send msg3 to B, then have the user type the
@@ -478,15 +545,16 @@ impl Initiator {
 
 /// B's side of one invitation: answers each msg1 found at its rendezvous, up to the invitation's
 /// `max_answers`. Keep one per invitation for as long as you watch its rendezvous.
-pub struct Listener<'a> {
-    invitation: &'a Invitation,
+pub struct Listener {
+    invitation: Invitation,
     answers: u16,
 }
 
-impl<'a> Listener<'a> {
-    pub fn new(invitation: &'a Invitation) -> Self {
+impl Listener {
+    /// A listener with its own copy of `invitation`, which has answered nothing yet.
+    pub fn new(invitation: &Invitation) -> Self {
         Listener {
-            invitation,
+            invitation: invitation.clone(),
             answers: 0,
         }
     }
@@ -507,17 +575,72 @@ impl<'a> Listener<'a> {
             return Err(Error::Expired);
         }
         let answer = Responder::respond_with(
-            self.invitation,
+            &self.invitation,
             msg1,
             payload,
             clock,
-            ResponderRandom::new(),
+            ResponderRandom::new()?,
         )?;
         self.answers += 1;
         Ok(answer)
     }
+
+    /// Saves this listener, its copy of the invitation included, so [`Listener::from_bytes`]
+    /// resumes it; save it again after each [`respond`](Listener::respond). As for
+    /// [`Initiator::to_bytes`], store it encrypted: it holds the invitation's secret. Only
+    /// listeners on one of the built-in [`Profile`](crate::Profile)s restore.
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let i = &self.invitation;
+        let mut out = state(STATE_LISTENER, 512 + i.prs.len() + i.channel.len());
+        out.extend_from_slice(&self.answers.to_be_bytes());
+        out.extend_from_slice(&i.rendezvous);
+        out.extend_from_slice(&i.valid_unix.start().to_be_bytes());
+        out.extend_from_slice(&i.valid_unix.end().to_be_bytes());
+        out.extend_from_slice(&i.config.invite_ttl.as_secs().to_be_bytes());
+        out.extend_from_slice(&i.config.max_answers.to_be_bytes());
+        out.extend_from_slice(&(i.config.max_payload as u64).to_be_bytes());
+        out.extend_from_slice(&i.config.appointment_window.as_secs().to_be_bytes());
+        put_bytes(&mut out, i.config.profile().name.as_bytes());
+        put_bytes(&mut out, &i.channel);
+        put_bytes(&mut out, &i.prs);
+        out
+    }
+
+    /// Restores a listener saved with [`Listener::to_bytes`]; [`Error::Rejected`] if `bytes` is
+    /// not one.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes, STATE_LISTENER)?;
+        let answers = r.u16()?;
+        let rendezvous = r.array()?;
+        let valid_unix = r.u64()?..=r.u64()?;
+        let (invite_ttl, max_answers, max_payload) = (r.u64()?, r.u16()?, r.u64()?);
+        let appointment_window = r.u64()?;
+        let config = Config::restore(
+            r.bytes()?,
+            invite_ttl,
+            max_answers,
+            max_payload,
+            appointment_window,
+        )
+        .map_err(|_| Error::Rejected)?;
+        let channel = r.bytes()?.to_vec();
+        let prs = Zeroizing::new(r.bytes()?.to_vec());
+        r.end()?;
+        let invitation = Invitation {
+            prs,
+            channel,
+            rendezvous,
+            valid_unix,
+            config,
+        };
+        Ok(Listener {
+            invitation,
+            answers,
+        })
+    }
 }
 
+/// B's answer to one msg1, from [`Listener::respond`] until msg3 arrives.
 pub struct Responder {
     ikm: Ikm,
     /// Up to the end of msg2.
@@ -576,6 +699,34 @@ impl Responder {
         self.deadline.now
     }
 
+    /// Saves this answer, so [`Responder::from_bytes`] resumes it. As for
+    /// [`Initiator::to_bytes`], store it encrypted and erase it once the step ends.
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let mut out = state(STATE_RESPONDER, 256 + self.transcript.0.len());
+        out.extend_from_slice(&*self.ikm);
+        out.extend_from_slice(&self.commitment);
+        put_deadline(&mut out, self.deadline);
+        put_bytes(&mut out, &self.transcript.0);
+        out
+    }
+
+    /// Restores an answer saved with [`Responder::to_bytes`]; [`Error::Rejected`] if `bytes` is
+    /// not one.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes, STATE_RESPONDER)?;
+        let ikm = Zeroizing::new(r.array()?);
+        let commitment = r.array()?;
+        let deadline = r.deadline()?;
+        let transcript = Transcript(r.bytes()?.to_vec());
+        r.end()?;
+        Ok(Responder {
+            ikm,
+            transcript,
+            commitment,
+            deadline,
+        })
+    }
+
     /// Completes the handshake with A's msg3: show the user [`Unconfirmed::safety_words`] to
     /// read out to A, and [`Unconfirmed::confirm`] once A says they matched. A forged msg3
     /// leaves this answer usable: it reveals nothing about the words.
@@ -631,6 +782,7 @@ impl Unconfirmed {
         }
     }
 
+    /// Which side this device played.
     pub fn role(&self) -> Role {
         self.established.role
     }
@@ -675,6 +827,7 @@ pub struct Established {
 }
 
 impl Established {
+    /// Which side this device played.
     pub fn role(&self) -> Role {
         self.role
     }
@@ -702,6 +855,80 @@ impl Established {
             &*self.key,
             &cpace::lv_cat(&[LABEL_EXPORT, label]),
         )
+    }
+}
+
+/// First byte of every saved state; changes whenever its layout does.
+const STATE_VERSION: u8 = 0;
+const STATE_INITIATOR: u8 = 1;
+const STATE_RESPONDER: u8 = 2;
+const STATE_LISTENER: u8 = 3;
+
+/// Saved state: `STATE_VERSION || kind || fields`, integers big-endian, variable-length fields
+/// prefixed with their length as 4 bytes. Reserved up front so no unzeroized copy is left behind.
+fn state(kind: u8, capacity: usize) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(2 + capacity));
+    out.extend_from_slice(&[STATE_VERSION, kind]);
+    out
+}
+
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(
+        &u32::try_from(bytes.len())
+            .expect("fields are small")
+            .to_be_bytes(),
+    );
+    out.extend_from_slice(bytes);
+}
+
+fn put_deadline(out: &mut Vec<u8>, deadline: Deadline) {
+    out.extend_from_slice(&deadline.now.to_be_bytes());
+    out.extend_from_slice(&deadline.unix.to_be_bytes());
+}
+
+/// Reads saved state; every error is [`Error::Rejected`].
+struct Reader<'a>(&'a [u8]);
+
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8], kind: u8) -> Result<Self, Error> {
+        match bytes {
+            [STATE_VERSION, k, rest @ ..] if *k == kind => Ok(Reader(rest)),
+            _ => Err(Error::Rejected),
+        }
+    }
+
+    fn take(&mut self, len: usize) -> Result<&'a [u8], Error> {
+        let (head, rest) = self.0.split_at_checked(len).ok_or(Error::Rejected)?;
+        self.0 = rest;
+        Ok(head)
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], Error> {
+        Ok(self.take(N)?.try_into().expect("N bytes"))
+    }
+
+    fn u16(&mut self) -> Result<u16, Error> {
+        self.array().map(u16::from_be_bytes)
+    }
+
+    fn u64(&mut self) -> Result<u64, Error> {
+        self.array().map(u64::from_be_bytes)
+    }
+
+    fn bytes(&mut self) -> Result<&'a [u8], Error> {
+        let len = u32::from_be_bytes(self.array()?);
+        self.take(usize::try_from(len).map_err(|_| Error::Rejected)?)
+    }
+
+    fn deadline(&mut self) -> Result<Deadline, Error> {
+        Ok(Deadline {
+            now: self.u64()?,
+            unix: self.u64()?,
+        })
+    }
+
+    fn end(self) -> Result<(), Error> {
+        self.0.is_empty().then_some(()).ok_or(Error::Rejected)
     }
 }
 
@@ -754,6 +981,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use proptest::prelude::*;
+
     use crate::config::{Bounded, Profile};
 
     const WORDS: &str = "alpha cable echo forest orbit velvet";
@@ -1001,6 +1230,125 @@ mod tests {
             listener.respond(&msg1, PB, c(NOW)).err(),
             Some(Error::Expired)
         );
+    }
+
+    #[test]
+    fn saved_steps_resume_with_their_counters() {
+        let config = Config::new(&Profile::NEARBY).with_max_answers(2).unwrap();
+        let invitation = Invitation::live(WORDS, CTX, &config).unwrap();
+        let (a, msg1) = Initiator::start(&invitation, PA, c(NOW)).unwrap();
+        let mut listener = Listener::from_bytes(&Listener::new(&invitation).to_bytes()).unwrap();
+        let (b, msg2) = listener.respond(&msg1, PB, c(NOW)).unwrap();
+        let (_, guess) = respond(&live(WRONG), &msg1, PB, c(NOW)).unwrap();
+
+        let mut a = Initiator::from_bytes(&a.to_bytes()).unwrap();
+        assert_eq!(a.finish(&guess, c(NOW)).err(), Some(Error::Rejected));
+        let saved = a.to_bytes();
+        let b = Responder::from_bytes(&b.to_bytes()).unwrap();
+        let (ua, msg3) = a.finish(&msg2, c(NOW)).unwrap();
+        // The state saved before finish gives the same msg3 again.
+        let (_, again) = Initiator::from_bytes(&saved)
+            .unwrap()
+            .finish(&msg2, c(NOW))
+            .unwrap();
+        assert_eq!(msg3, again);
+        let ub = b.finish(&msg3, c(NOW)).unwrap();
+        assert!(ua.verify(&ub.safety_words(), c(NOW)).is_ok());
+
+        // One wrong msg2 and one msg1 answered were saved: one more each, then Expired.
+        let mut a = Initiator::from_bytes(&saved).unwrap();
+        assert_eq!(a.finish(&guess, c(NOW)).err(), Some(Error::Rejected));
+        assert_eq!(a.finish(&msg2, c(NOW)).err(), Some(Error::Expired));
+        let mut listener = Listener::from_bytes(&listener.to_bytes()).unwrap();
+        assert!(listener.respond(&msg1, PB, c(NOW)).is_ok());
+        assert_eq!(
+            listener.respond(&msg1, PB, c(NOW)).err(),
+            Some(Error::Expired)
+        );
+    }
+
+    #[test]
+    fn a_restored_step_dies_by_the_wall_clock_after_a_restart() {
+        let (a, msg1) = Initiator::start(&live(WORDS), PA, c(NOW)).unwrap();
+        let (_, msg2) = respond(&live(WORDS), &msg1, PB, c(NOW)).unwrap();
+        let saved = a.to_bytes();
+        // The monotonic clock started over at 0.
+        let restarted = |now_unix| Clock { now: 5, now_unix };
+        let mut a = Initiator::from_bytes(&saved).unwrap();
+        assert_eq!(
+            a.finish(&msg2, restarted(AT + TTL + 1)).err(),
+            Some(Error::Expired)
+        );
+        assert!(a.finish(&msg2, restarted(AT + TTL)).is_ok());
+    }
+
+    #[test]
+    fn malformed_state_rejected() {
+        let invitation = live(WORDS);
+        let (a, msg1) = Initiator::start(&invitation, PA, c(NOW)).unwrap();
+        let (b, _) = respond(&invitation, &msg1, PB, c(NOW)).unwrap();
+        let states = [
+            (a.to_bytes(), Initiator::from_bytes(&[]).err()),
+            (b.to_bytes(), Responder::from_bytes(&[]).err()),
+            (
+                Listener::new(&invitation).to_bytes(),
+                Listener::from_bytes(&[]).err(),
+            ),
+        ];
+        // Restores and saves again.
+        let resave = |kind: usize, bytes: &[u8]| match kind {
+            0 => Initiator::from_bytes(bytes).map(|s| s.to_bytes()),
+            1 => Responder::from_bytes(bytes).map(|s| s.to_bytes()),
+            _ => Listener::from_bytes(bytes).map(|s| s.to_bytes()),
+        };
+        let parse = |kind, bytes: &[u8]| resave(kind, bytes).err();
+        for (kind, (state, empty)) in states.iter().enumerate() {
+            assert_eq!(*empty, Some(Error::Rejected));
+            assert_eq!(resave(kind, state).unwrap(), *state);
+            let mut longer = state.to_vec();
+            longer.push(0);
+            assert_eq!(parse(kind, &longer), Some(Error::Rejected));
+            assert_eq!(
+                parse(kind, &state[..state.len() - 1]),
+                Some(Error::Rejected)
+            );
+            let mut version = state.to_vec();
+            version[0] = STATE_VERSION + 1;
+            assert_eq!(parse(kind, &version), Some(Error::Rejected));
+            assert_eq!(parse((kind + 1) % 3, state), Some(Error::Rejected));
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn any_payload_up_to_the_ceiling_completes(
+            pa in prop::collection::vec(any::<u8>(), 0..=PAYLOAD_CEILING),
+            pb in prop::collection::vec(any::<u8>(), 0..=PAYLOAD_CEILING),
+        ) {
+            let config = Config::new(&Profile::PQ_MESSENGER)
+                .with_max_payload(PAYLOAD_CEILING)
+                .unwrap();
+            let invitation = Invitation::live(WORDS, CTX, &config).unwrap();
+            let (mut a, msg1) = Initiator::start(&invitation, &pa, c(NOW)).unwrap();
+            let (b, msg2) = respond(&invitation, &msg1, &pb, c(NOW)).unwrap();
+            let (a, msg3) = a.finish(&msg2, c(NOW)).unwrap();
+            let b = b.finish(&msg3, c(NOW)).unwrap();
+            let a = a.verify(&b.safety_words(), c(NOW)).unwrap();
+            let b = b.confirm(c(NOW)).unwrap();
+            prop_assert_eq!(a.key(), b.key());
+            prop_assert_eq!((a.peer_payload(), b.peer_payload()), (&pb[..], &pa[..]));
+        }
+
+        #[test]
+        fn any_altered_byte_rejected(msg in 1..=3usize, at: prop::sample::Index, xor in 1..=u8::MAX) {
+            let alter = |m: usize, buf: &mut Vec<u8>| {
+                if m == msg {
+                    let at = at.index(buf.len());
+                    buf[at] ^= xor;
+                }
+            };
+            prop_assert_eq!(run(WORDS, alter).err(), Some(Error::Rejected));
+        }
     }
 
     #[test]

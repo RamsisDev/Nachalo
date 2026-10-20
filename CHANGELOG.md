@@ -17,3 +17,17 @@ The wire format, `CI` and the test vectors are unchanged; `PROTOCOL` stays `"Nac
 - **The responder's answer cap is enforced** by `Listener`, which replaces `Responder::respond`.
 - `new_physical_token` returns a `Result` and rejects an expiry that overflows. `Error` is
   `#[non_exhaustive]` and gains `OutOfRange`.
+- **Pending steps can be saved.** `Initiator`, `Responder` and `Listener` gain `to_bytes` and
+  `from_bytes`, so a handshake survives the OS killing the app. The state starts with a version
+  byte and holds secrets: store it encrypted. `Listener` now keeps its own copy of the invitation
+  and has no lifetime parameter.
+- **Each step's TTL also runs on the wall clock**, so a step restored after a restart, which
+  resets the monotonic clock, still expires on time.
+- **A failing OS random generator is an error, not a panic**: `words` returns a `Result`, and
+  `Error` gains `Rng`.
+- **Words are looked up in constant time**, by index into the list and, when typed, compared with
+  every list word.
+- **The published crate includes `vectors/` and `docs/`**, so `cargo test` passes on the crates.io
+  download.
+- **Negative test vectors**, `vectors/v0-negative.json`: messages and times that must be rejected.
+- Fuzz targets (`fuzz/`), property tests and benchmarks. Every public item is documented.

@@ -22,8 +22,13 @@
 //! `spec/nachalo.md` in the repository, not by this crate.
 //!
 //! Every step takes a [`Clock`]: `now`, monotonic seconds that keep counting while the device
-//! sleeps, for each step's TTL, and `now_unix`, the wall clock, for the window of an appointment
-//! or physical token. No time travels on the wire and no two devices' clocks are compared.
+//! sleeps, and `now_unix`, the wall clock. Each step's TTL runs on both, and the window of an
+//! appointment or physical token on the wall clock. No time travels on the wire and no two
+//! devices' clocks are compared.
+//!
+//! A pending step survives the app being killed: [`Initiator`], [`Responder`] and [`Listener`]
+//! save to bytes with `to_bytes` and restore with `from_bytes`. The bytes hold secrets, so store
+//! them encrypted (see [`Initiator::to_bytes`]).
 //!
 //! The limits (TTL, answers, payload size, appointment window) are local: each device picks a
 //! [`Config`] from a [`Profile`], and devices with different ones still interoperate. Every
@@ -34,7 +39,7 @@
 //! # fn main() -> Result<(), nachalo::Error> {
 //! # let clock = Clock { now: 0, now_unix: 1_900_000_000 };
 //! let context = b"my-app v1";
-//! let words = words(6); // A gives these to B outside the protocol
+//! let words = words(6)?; // A gives these to B outside the protocol
 //! let invitation = Invitation::live(&words, context, &Config::default())?; // both sides build it
 //!
 //! // A posts msg1 at invitation.rendezvous()

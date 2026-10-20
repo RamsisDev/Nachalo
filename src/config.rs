@@ -8,8 +8,11 @@ use crate::handshake::{Error, PAYLOAD_CEILING};
 /// A default and the range a [`Config`] may move it within.
 #[derive(Clone, Copy, Debug)]
 pub struct Bounded<T> {
+    /// The smallest value allowed.
     pub min: T,
+    /// The value a new [`Config`] starts with.
     pub default: T,
+    /// The largest value allowed.
     pub max: T,
 }
 
@@ -35,6 +38,7 @@ const fn minutes(min: u64, default: u64, max: u64) -> Bounded<Duration> {
 /// devices on different profiles interoperate.
 #[derive(Debug)]
 pub struct Profile {
+    /// Identifies the profile, for instance in a saved [`Listener`](crate::Listener).
     pub name: &'static str,
     /// How long each pending step lives on this device.
     pub invite_ttl: Bounded<Duration>,
@@ -126,15 +130,19 @@ impl Config {
         }
     }
 
+    /// The profile these values were chosen from.
     pub fn profile(&self) -> &'static Profile {
         self.profile
     }
 
+    /// How long each pending step lives; [`Error::OutOfRange`] outside the profile's range.
     pub fn with_invite_ttl(self, ttl: Duration) -> Result<Self, Error> {
         let invite_ttl = self.profile.invite_ttl.check(ttl)?;
         Ok(Config { invite_ttl, ..self })
     }
 
+    /// Wrong msg2 taken as initiator, and msg1 answered as responder, per invitation;
+    /// [`Error::OutOfRange`] outside the profile's range.
     pub fn with_max_answers(self, answers: u16) -> Result<Self, Error> {
         let max_answers = self.profile.max_answers.check(answers)?;
         Ok(Config {
@@ -143,6 +151,7 @@ impl Config {
         })
     }
 
+    /// Largest payload this device sends; [`Error::OutOfRange`] outside the profile's range.
     pub fn with_max_payload(self, bytes: usize) -> Result<Self, Error> {
         let max_payload = self.profile.max_payload.check(bytes)?;
         Ok(Config {
@@ -151,12 +160,38 @@ impl Config {
         })
     }
 
+    /// How long after its start time an appointment works; [`Error::OutOfRange`] outside the
+    /// profile's range.
     pub fn with_appointment_window(self, window: Duration) -> Result<Self, Error> {
         let appointment_window = self.profile.appointment_window.check(window)?;
         Ok(Config {
             appointment_window,
             ..self
         })
+    }
+
+    /// The config of a saved [`Listener`](crate::Listener): a built-in profile by name, and each
+    /// value checked against its range again.
+    pub(crate) fn restore(
+        name: &[u8],
+        invite_ttl: u64,
+        max_answers: u16,
+        max_payload: u64,
+        appointment_window: u64,
+    ) -> Result<Self, Error> {
+        let profile = [
+            &Profile::INTERACTIVE,
+            &Profile::PQ_MESSENGER,
+            &Profile::NEARBY,
+        ]
+        .into_iter()
+        .find(|p| p.name.as_bytes() == name)
+        .ok_or(Error::OutOfRange)?;
+        Config::new(profile)
+            .with_invite_ttl(Duration::from_secs(invite_ttl))?
+            .with_max_answers(max_answers)?
+            .with_max_payload(usize::try_from(max_payload).map_err(|_| Error::OutOfRange)?)?
+            .with_appointment_window(Duration::from_secs(appointment_window))
     }
 
     /// log2 of the per-side guessing bound in live mode, rounded up: -36 by default.

@@ -68,7 +68,7 @@ covers the full threat model.
 | Path | What it is |
 | --- | --- |
 | [`spec/nachalo.md`](spec/nachalo.md) | The specification. It defines the protocol, byte by byte. |
-| [`vectors/`](vectors/) | Test vectors: one full handshake per mode, with every random value fixed. |
+| [`vectors/`](vectors/) | Test vectors: one full handshake per mode, with every random value fixed, and messages and times that must be rejected. |
 | [`docs/`](docs/README.md) | A guide to the protocol and each invitation mode. |
 | [`src/`](src/) | The reference implementation, a Rust crate. |
 
@@ -99,7 +99,7 @@ fn main() -> Result<(), nachalo::Error> {
     // Each device's monotonic seconds and wall-clock Unix seconds, read before every step.
     let clock = Clock { now: 0, now_unix: 1_900_000_000 };
 
-    let words = words(6); // A's device draws them, and A gives them to B
+    let words = words(6)?; // A's device draws them, and A gives them to B
     let invitation = Invitation::live(&words, context, &config)?; // both sides build it
 
     // A posts msg1 at invitation.rendezvous(); B listens there and answers.
@@ -130,8 +130,12 @@ The application provides:
   where msg2 and msg3 travel.
 - **Clocks.** Every step takes a `Clock`: `now`, seconds from a monotonic clock that keeps
   counting while the device sleeps, and `now_unix`, the wall clock. Each pending step expires
-  after its `invite_ttl` (10 minutes by default) on its own device, or sooner at the end of an
-  appointment or when a token expires; the wall clock is checked at every step.
+  after its `invite_ttl` (10 minutes by default) on its own device, on either clock, or sooner at
+  the end of an appointment or when a token expires; the wall clock is checked at every step.
+- **Storage for pending steps**, if the OS may kill the app mid-handshake. `Initiator`,
+  `Responder` and `Listener` save with `to_bytes` and restore with `from_bytes`. The bytes hold
+  the handshake's secrets: keep them encrypted, in the Keychain or the Android Keystore for
+  example.
 - **Limits.** `Config::new(&Profile::INTERACTIVE)` (the default), `PQ_MESSENGER` (payloads up to
   8 KiB, for post-quantum keys and signatures) or `NEARBY` (short TTL, few answers), each tunable
   within its ranges. Limits are local, so devices with different ones still connect, and every
@@ -149,6 +153,8 @@ cargo test                                  # unit tests, CPace draft vectors, N
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 NACHALO_WRITE_VECTORS=1 cargo test vectors  # rewrite vectors/ after a deliberate change
+cargo bench                                 # cost of each step
+cargo +nightly fuzz run respond             # or finish_a, finish_b, words, state; needs cargo-fuzz
 ```
 
 The code examples in this README and in `docs/` are compiled and run by `cargo test`.
@@ -175,9 +181,8 @@ Report it privately through
 ## Roadmap
 
 - Formal model of v0 (ProVerif or Tamarin).
-- More test vectors: rejections and edge cases.
-- Reference implementation: serializable pending state, for mobile apps the OS kills
-  mid-handshake, and bindings from the same core (a C ABI, UniFFI for Swift and Kotlin, WASM).
+- Reference implementation: bindings from the same core (a C ABI, UniFFI for Swift and Kotlin,
+  WASM).
 
 ## License
 

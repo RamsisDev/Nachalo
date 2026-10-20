@@ -57,7 +57,7 @@ fn main() -> Result<(), nachalo::Error> {
     let clock = Clock { now: 0, now_unix: 1_900_000_000 };
 
     // Alice's device draws the words, and Alice gives them to Bob.
-    let alice_words = words(6);
+    let alice_words = words(6)?;
     let bob_typed = alice_words.to_uppercase(); // case and spacing do not matter
 
     // Alice starts and posts msg1 at the rendezvous id.
