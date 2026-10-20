@@ -1,0 +1,31 @@
+[package]
+name = "nachalo-wasm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "TypeScript and JavaScript bindings for Nachalo, through wasm-bindgen."
+repository = "https://github.com/RamsisDev/Nachalo"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nachalo = { path = "../.." }
+wasm-bindgen = "0.2.129"
+js-sys = "0.3"
+
+# getrandom 0.4 reaches crypto.getRandomValues on wasm32-unknown-unknown only with this feature
+# (no --cfg since 0.4); allowed here since this crate depends on wasm-bindgen anyway.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+
+[lints.rust]
+# As in the core. The unsafe FFI code in wasm-bindgen's glue comes from macro
+# expansion, which this lint does not check.
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

@@ -71,6 +71,7 @@ covers the full threat model.
 | [`vectors/`](vectors/) | Test vectors: one full handshake per mode, with every random value fixed, and messages and times that must be rejected. |
 | [`docs/`](docs/README.md) | A guide to the protocol and each invitation mode. |
 | [`src/`](src/) | The reference implementation, a Rust crate. |
+| [`bindings/`](#bindings) | Bindings for TypeScript, Kotlin, Swift and Go, over the same crate. |
 
 Nachalo is a protocol, not a library. Anyone can implement it from the specification and check
 their implementation against the test vectors. Where the reference implementation and the
@@ -146,11 +147,26 @@ The application provides:
   initiator enforces its own cap.
 - **The user interface** for entering the words and comparing the safety words.
 
+## Bindings
+
+Thin bindings over the same Rust crate, with the same API in each language's naming. Each page
+has its build steps and the live example above in that language.
+
+| Language | Built with | Read more |
+| --- | --- | --- |
+| TypeScript and JavaScript | wasm-bindgen, for Node.js and browsers | [bindings/wasm](bindings/wasm/README.md) |
+| Kotlin and Swift | UniFFI | [bindings/uniffi](bindings/uniffi/README.md) |
+| Go | uniffi-bindgen-go, over cgo | [bindings/go](bindings/go/README.md) |
+
+The words, tokens, payloads and keys a binding hands to its language are ordinary strings and
+byte arrays there, out of reach of the Rust crate's zeroizing; each page says how to release the
+objects that hold secrets.
+
 ## Development
 
 ```bash
-cargo test                                  # unit tests, CPace draft vectors, Nachalo vectors, doc examples
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace                      # unit tests, CPace draft vectors, Nachalo vectors, doc examples
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 NACHALO_WRITE_VECTORS=1 cargo test vectors  # rewrite vectors/ after a deliberate change
 cargo bench                                 # cost of each step
@@ -181,8 +197,7 @@ Report it privately through
 ## Roadmap
 
 - Formal model of v0 (ProVerif or Tamarin).
-- Reference implementation: bindings from the same core (a C ABI, UniFFI for Swift and Kotlin,
-  WASM).
+- Reference implementation: a C ABI.
 
 ## License
 

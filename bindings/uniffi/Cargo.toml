@@ -1,0 +1,33 @@
+[package]
+name = "nachalo-uniffi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Kotlin, Swift and Go bindings for Nachalo, through UniFFI."
+repository = "https://github.com/RamsisDev/Nachalo"
+publish = false
+
+[lib]
+# cdylib for Kotlin (JNA), staticlib for Swift and Go; lib for the unit tests and the bin.
+crate-type = ["lib", "cdylib", "staticlib"]
+name = "nachalo_uniffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+nachalo = { path = "../.." }
+# Exactly the UniFFI uniffi-bindgen-go v0.7.1+v0.31.0 is built on, so one library serves
+# Kotlin, Swift and Go.
+uniffi = { version = "=0.31.0", features = ["cli"] }
+
+[lints.rust]
+# As in the core. The unsafe FFI code in UniFFI's scaffolding comes from macro
+# expansion, which this lint does not check.
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

@@ -9,11 +9,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
 
   audit:
     runs-on: ubuntu-latest
@@ -22,7 +22,80 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The test uses `using`, which Node 24 has and the runner's Node 22 lacks.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo install wasm-pack --version 0.15.0 --locked
+      - run: wasm-pack build bindings/wasm --target nodejs
+      - run: node --test bindings/wasm/tests/handshake.test.mts
+
+  kotlin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo build -p nachalo-uniffi --lib
+      - run: >-
+          cargo run -p nachalo-uniffi --bin uniffi-bindgen -- generate --no-format
+          --library target/debug/libnachalo_uniffi.so --language kotlin --out-dir target/uniffi/kotlin
+      - run: |
+          curl -sSfLo target/jna.jar https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
+          echo "b3a9408e7c51e08ef0e3bfcc08f443f6ec0f6191ba8cd7c18d53d2b22e5bdbc0  target/jna.jar" | sha256sum -c
+      # kotlinc comes with the runner image.
+      - run: kotlinc -classpath target/jna.jar target/uniffi/kotlin/uniffi/nachalo/nachalo.kt -d target/uniffi/nachalo.jar
+      - run: >-
+          kotlinc -classpath target/jna.jar:target/uniffi/nachalo.jar -J-Djna.library.path=target/debug
+          -script bindings/uniffi/tests/kotlin/handshake.kts
+
+  swift:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo build -p nachalo-uniffi --lib
+      - run: >-
+          cargo run -p nachalo-uniffi --bin uniffi-bindgen -- generate --no-format
+          --library target/debug/libnachalo_uniffi.dylib --language swift --out-dir target/uniffi/swift
+      # Links the static library, so the test binary needs no dylib at run time.
+      - run: >-
+          swiftc -Xcc -fmodule-map-file=target/uniffi/swift/nachaloFFI.modulemap -I target/uniffi/swift
+          target/uniffi/swift/nachalo.swift bindings/uniffi/tests/swift/main.swift
+          target/debug/libnachalo_uniffi.a -o target/uniffi/swift-test
+      - run: target/uniffi/swift-test
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - run: >-
+          cargo install uniffi-bindgen-go --git https://github.com/NordSecurity/uniffi-bindgen-go
+          --tag v0.7.1+v0.31.0 --locked
+      - name: The committed Go code is what the generator produces
+        run: |
+          bindings/go/generate.sh
+          git diff --exit-code -- bindings/go
+          test -z "$(git status --porcelain -- bindings/go)"
+      - run: cargo build -p nachalo-uniffi --lib --release
+      - working-directory: bindings/go
+        env:
+          CGO_ENABLED: "1"
+          # The static library and the system libraries it needs (cargo's native-static-libs).
+          CGO_LDFLAGS: >-
+            ${{ github.workspace }}/target/release/libnachalo_uniffi.a
+            -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
+        run: |
+          go vet ./...
+          go test ./...
