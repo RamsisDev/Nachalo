@@ -370,6 +370,66 @@ static void call_UniffiForeignFutureCompleteVoid(
 
 
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_CLONE_CHANNEL
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_CLONE_CHANNEL
+uint64_t uniffi_nachalo_uniffi_fn_clone_channel(uint64_t handle, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_FREE_CHANNEL
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_FREE_CHANNEL
+void uniffi_nachalo_uniffi_fn_free_channel(uint64_t handle, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_CONSTRUCTOR_CHANNEL_FROM_ESTABLISHED
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_CONSTRUCTOR_CHANNEL_FROM_ESTABLISHED
+uint64_t uniffi_nachalo_uniffi_fn_constructor_channel_from_established(uint64_t established, RustBuffer peer_id, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_CONSTRUCTOR_CHANNEL_OPEN_STATE
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_CONSTRUCTOR_CHANNEL_OPEN_STATE
+uint64_t uniffi_nachalo_uniffi_fn_constructor_channel_open_state(RustBuffer blob, RustBuffer store_key, RustBuffer peer_id, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_OPEN
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_OPEN
+RustBuffer uniffi_nachalo_uniffi_fn_method_channel_open(uint64_t ptr, RustBuffer frame, uint64_t now_unix, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_RECEIVED
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_RECEIVED
+uint64_t uniffi_nachalo_uniffi_fn_method_channel_received(uint64_t ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_RECV_TOPIC
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_RECV_TOPIC
+RustBuffer uniffi_nachalo_uniffi_fn_method_channel_recv_topic(uint64_t ptr, uint32_t epoch, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_ROLE
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_ROLE
+RustBuffer uniffi_nachalo_uniffi_fn_method_channel_role(uint64_t ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_SEAL
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_SEAL
+RustBuffer uniffi_nachalo_uniffi_fn_method_channel_seal(uint64_t ptr, RustBuffer kind, RustBuffer body, uint64_t now_unix, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_SEAL_STATE
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_SEAL_STATE
+RustBuffer uniffi_nachalo_uniffi_fn_method_channel_seal_state(uint64_t ptr, RustBuffer store_key, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_SEND_TOPIC
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_SEND_TOPIC
+RustBuffer uniffi_nachalo_uniffi_fn_method_channel_send_topic(uint64_t ptr, uint32_t epoch, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_SENT
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_METHOD_CHANNEL_SENT
+uint64_t uniffi_nachalo_uniffi_fn_method_channel_sent(uint64_t ptr, RustCallStatus *out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_CLONE_CONFIG
 #define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_CLONE_CONFIG
 uint64_t uniffi_nachalo_uniffi_fn_clone_config(uint64_t handle, RustCallStatus *out_status
@@ -579,6 +639,17 @@ uint32_t uniffi_nachalo_uniffi_fn_func_appointment_words_a(RustCallStatus *out_s
 #ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_FUNC_APPOINTMENT_WORDS_B
 #define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_FUNC_APPOINTMENT_WORDS_B
 uint32_t uniffi_nachalo_uniffi_fn_func_appointment_words_b(RustCallStatus *out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_FUNC_CHANNEL_EPOCH
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_FUNC_CHANNEL_EPOCH
+uint32_t uniffi_nachalo_uniffi_fn_func_channel_epoch(uint64_t now_unix, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_FUNC_CHANNEL_MAX_BODY
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_FN_FUNC_CHANNEL_MAX_BODY
+uint32_t uniffi_nachalo_uniffi_fn_func_channel_max_body(RustCallStatus *out_status
     
 );
 #endif
@@ -904,6 +975,18 @@ uint16_t uniffi_nachalo_uniffi_checksum_func_appointment_words_b(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_FUNC_CHANNEL_EPOCH
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_FUNC_CHANNEL_EPOCH
+uint16_t uniffi_nachalo_uniffi_checksum_func_channel_epoch(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_FUNC_CHANNEL_MAX_BODY
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_FUNC_CHANNEL_MAX_BODY
+uint16_t uniffi_nachalo_uniffi_checksum_func_channel_max_body(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_FUNC_MSG1_LEN
 #define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_FUNC_MSG1_LEN
 uint16_t uniffi_nachalo_uniffi_checksum_func_msg1_len(void
@@ -955,6 +1038,54 @@ uint16_t uniffi_nachalo_uniffi_checksum_func_word_count(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_FUNC_WORDS
 #define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_FUNC_WORDS
 uint16_t uniffi_nachalo_uniffi_checksum_func_words(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_OPEN
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_OPEN
+uint16_t uniffi_nachalo_uniffi_checksum_method_channel_open(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_RECEIVED
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_RECEIVED
+uint16_t uniffi_nachalo_uniffi_checksum_method_channel_received(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_RECV_TOPIC
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_RECV_TOPIC
+uint16_t uniffi_nachalo_uniffi_checksum_method_channel_recv_topic(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_ROLE
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_ROLE
+uint16_t uniffi_nachalo_uniffi_checksum_method_channel_role(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_SEAL
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_SEAL
+uint16_t uniffi_nachalo_uniffi_checksum_method_channel_seal(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_SEAL_STATE
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_SEAL_STATE
+uint16_t uniffi_nachalo_uniffi_checksum_method_channel_seal_state(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_SEND_TOPIC
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_SEND_TOPIC
+uint16_t uniffi_nachalo_uniffi_checksum_method_channel_send_topic(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_SENT
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_CHANNEL_SENT
+uint16_t uniffi_nachalo_uniffi_checksum_method_channel_sent(void
     
 );
 #endif
@@ -1075,6 +1206,18 @@ uint16_t uniffi_nachalo_uniffi_checksum_method_unconfirmed_safety_words(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_UNCONFIRMED_VERIFY
 #define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_METHOD_UNCONFIRMED_VERIFY
 uint16_t uniffi_nachalo_uniffi_checksum_method_unconfirmed_verify(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_CONSTRUCTOR_CHANNEL_FROM_ESTABLISHED
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_CONSTRUCTOR_CHANNEL_FROM_ESTABLISHED
+uint16_t uniffi_nachalo_uniffi_checksum_constructor_channel_from_established(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_CONSTRUCTOR_CHANNEL_OPEN_STATE
+#define UNIFFI_FFIDEF_UNIFFI_NACHALO_UNIFFI_CHECKSUM_CONSTRUCTOR_CHANNEL_OPEN_STATE
+uint16_t uniffi_nachalo_uniffi_checksum_constructor_channel_open_state(void
     
 );
 #endif

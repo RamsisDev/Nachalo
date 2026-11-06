@@ -389,6 +389,24 @@ func uniffiCheckChecksums() {
 	}
 	{
 		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_func_channel_epoch()
+		})
+		if checksum != 21424 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_func_channel_epoch: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_func_channel_max_body()
+		})
+		if checksum != 56523 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_func_channel_max_body: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_nachalo_uniffi_checksum_func_msg1_len()
 		})
 		if checksum != 30379 {
@@ -466,6 +484,78 @@ func uniffiCheckChecksums() {
 		if checksum != 49819 {
 			// If this happens try cleaning and rebuilding your project
 			panic("nachalo: uniffi_nachalo_uniffi_checksum_func_words: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_method_channel_open()
+		})
+		if checksum != 15499 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_method_channel_open: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_method_channel_received()
+		})
+		if checksum != 24293 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_method_channel_received: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_method_channel_recv_topic()
+		})
+		if checksum != 30463 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_method_channel_recv_topic: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_method_channel_role()
+		})
+		if checksum != 36443 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_method_channel_role: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_method_channel_seal()
+		})
+		if checksum != 8437 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_method_channel_seal: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_method_channel_seal_state()
+		})
+		if checksum != 61771 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_method_channel_seal_state: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_method_channel_send_topic()
+		})
+		if checksum != 31641 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_method_channel_send_topic: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_method_channel_sent()
+		})
+		if checksum != 60699 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_method_channel_sent: UniFFI API checksum mismatch")
 		}
 	}
 	{
@@ -646,6 +736,24 @@ func uniffiCheckChecksums() {
 		if checksum != 36233 {
 			// If this happens try cleaning and rebuilding your project
 			panic("nachalo: uniffi_nachalo_uniffi_checksum_method_unconfirmed_verify: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_constructor_channel_from_established()
+		})
+		if checksum != 41915 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_constructor_channel_from_established: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_nachalo_uniffi_checksum_constructor_channel_open_state()
+		})
+		if checksum != 60715 {
+			// If this happens try cleaning and rebuilding your project
+			panic("nachalo: uniffi_nachalo_uniffi_checksum_constructor_channel_open_state: UniFFI API checksum mismatch")
 		}
 	}
 	{
@@ -942,6 +1050,224 @@ func (ffiObject *FfiObject) freeRustArcPtr() {
 		ffiObject.freeFunction(ffiObject.handle, status)
 		return 0
 	})
+}
+
+// One side of a Nachalo Channel v1 (`spec/channel.md`). Its keys never leave Rust: they come
+// from the handshake inside `from_established` and leave only sealed by `seal_state`.
+type ChannelInterface interface {
+	// Opens one frame from the peer; a frame that fails changes nothing.
+	Open(frame []byte, nowUnix uint64) (OpenedFrame, error)
+	// The next counter expected from the peer.
+	Received() uint64
+	// The topic this side reads on UTC day `epoch`.
+	RecvTopic(epoch uint32) string
+	// Which side this device played.
+	Role() Role
+	// Seals `body` into one fixed-size frame.
+	Seal(kind FrameKind, body []byte, nowUnix uint64) ([]byte, error)
+	// The whole state, sealed under the 32-byte `store_key`.
+	SealState(storeKey []byte) ([]byte, error)
+	// The topic this side publishes to on UTC day `epoch`.
+	SendTopic(epoch uint32) string
+	// Frames sealed so far.
+	Sent() uint64
+}
+
+// One side of a Nachalo Channel v1 (`spec/channel.md`). Its keys never leave Rust: they come
+// from the handshake inside `from_established` and leave only sealed by `seal_state`.
+type Channel struct {
+	ffiObject FfiObject
+}
+
+// A fresh channel from a confirmed handshake, bound to the public `peer_id`.
+func ChannelFromEstablished(established *Established, peerId []byte) (*Channel, error) {
+	_uniffiRV, _uniffiErr := rustCallWithError[*ChannelError](FfiConverterChannelError{}, func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
+		return C.uniffi_nachalo_uniffi_fn_constructor_channel_from_established(FfiConverterEstablishedINSTANCE.Lower(established), FfiConverterBytesINSTANCE.Lower(peerId), _uniffiStatus)
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue *Channel
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterChannelINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// Restores a channel from `seal_state`, for this 32-byte `store_key` and `peer_id`.
+func ChannelOpenState(blob []byte, storeKey []byte, peerId []byte) (*Channel, error) {
+	_uniffiRV, _uniffiErr := rustCallWithError[*ChannelError](FfiConverterChannelError{}, func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
+		return C.uniffi_nachalo_uniffi_fn_constructor_channel_open_state(FfiConverterBytesINSTANCE.Lower(blob), FfiConverterBytesINSTANCE.Lower(storeKey), FfiConverterBytesINSTANCE.Lower(peerId), _uniffiStatus)
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue *Channel
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterChannelINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// Opens one frame from the peer; a frame that fails changes nothing.
+func (_self *Channel) Open(frame []byte, nowUnix uint64) (OpenedFrame, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Channel")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[*ChannelError](FfiConverterChannelError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_nachalo_uniffi_fn_method_channel_open(
+				_pointer, FfiConverterBytesINSTANCE.Lower(frame), FfiConverterUint64INSTANCE.Lower(nowUnix), _uniffiStatus),
+		}
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue OpenedFrame
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterOpenedFrameINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// The next counter expected from the peer.
+func (_self *Channel) Received() uint64 {
+	_pointer := _self.ffiObject.incrementPointer("*Channel")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterUint64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
+		return C.uniffi_nachalo_uniffi_fn_method_channel_received(
+			_pointer, _uniffiStatus)
+	}))
+}
+
+// The topic this side reads on UTC day `epoch`.
+func (_self *Channel) RecvTopic(epoch uint32) string {
+	_pointer := _self.ffiObject.incrementPointer("*Channel")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterStringINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_nachalo_uniffi_fn_method_channel_recv_topic(
+				_pointer, FfiConverterUint32INSTANCE.Lower(epoch), _uniffiStatus),
+		}
+	}))
+}
+
+// Which side this device played.
+func (_self *Channel) Role() Role {
+	_pointer := _self.ffiObject.incrementPointer("*Channel")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterRoleINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_nachalo_uniffi_fn_method_channel_role(
+				_pointer, _uniffiStatus),
+		}
+	}))
+}
+
+// Seals `body` into one fixed-size frame.
+func (_self *Channel) Seal(kind FrameKind, body []byte, nowUnix uint64) ([]byte, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Channel")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[*ChannelError](FfiConverterChannelError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_nachalo_uniffi_fn_method_channel_seal(
+				_pointer, FfiConverterFrameKindINSTANCE.Lower(kind), FfiConverterBytesINSTANCE.Lower(body), FfiConverterUint64INSTANCE.Lower(nowUnix), _uniffiStatus),
+		}
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue []byte
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterBytesINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// The whole state, sealed under the 32-byte `store_key`.
+func (_self *Channel) SealState(storeKey []byte) ([]byte, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Channel")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[*ChannelError](FfiConverterChannelError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_nachalo_uniffi_fn_method_channel_seal_state(
+				_pointer, FfiConverterBytesINSTANCE.Lower(storeKey), _uniffiStatus),
+		}
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue []byte
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterBytesINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// The topic this side publishes to on UTC day `epoch`.
+func (_self *Channel) SendTopic(epoch uint32) string {
+	_pointer := _self.ffiObject.incrementPointer("*Channel")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterStringINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_nachalo_uniffi_fn_method_channel_send_topic(
+				_pointer, FfiConverterUint32INSTANCE.Lower(epoch), _uniffiStatus),
+		}
+	}))
+}
+
+// Frames sealed so far.
+func (_self *Channel) Sent() uint64 {
+	_pointer := _self.ffiObject.incrementPointer("*Channel")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterUint64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
+		return C.uniffi_nachalo_uniffi_fn_method_channel_sent(
+			_pointer, _uniffiStatus)
+	}))
+}
+func (object *Channel) Destroy() {
+	runtime.SetFinalizer(object, nil)
+	object.ffiObject.destroy()
+}
+
+type FfiConverterChannel struct{}
+
+var FfiConverterChannelINSTANCE = FfiConverterChannel{}
+
+func (c FfiConverterChannel) Lift(handle C.uint64_t) *Channel {
+	result := &Channel{
+		newFfiObject(
+			handle,
+			func(handle C.uint64_t, status *C.RustCallStatus) C.uint64_t {
+				return C.uniffi_nachalo_uniffi_fn_clone_channel(handle, status)
+			},
+			func(handle C.uint64_t, status *C.RustCallStatus) {
+				C.uniffi_nachalo_uniffi_fn_free_channel(handle, status)
+			},
+		),
+	}
+	runtime.SetFinalizer(result, (*Channel).Destroy)
+	return result
+}
+
+func (c FfiConverterChannel) Read(reader io.Reader) *Channel {
+	return c.Lift(C.uint64_t(readUint64(reader)))
+}
+
+func (c FfiConverterChannel) Lower(value *Channel) C.uint64_t {
+	// TODO: this is bad - all synchronization from ObjectRuntime.go is discarded here,
+	// because the handle will be decremented immediately after this function returns,
+	// and someone will be left holding onto a non-locked handle.
+	handle := value.ffiObject.incrementPointer("*Channel")
+	defer value.ffiObject.decrementPointer()
+	return handle
+}
+
+func (c FfiConverterChannel) Write(writer io.Writer, value *Channel) {
+	writeUint64(writer, uint64(c.Lower(value)))
+}
+
+func LiftFromExternalChannel(handle uint64) *Channel {
+	return FfiConverterChannelINSTANCE.Lift(C.uint64_t(handle))
+}
+
+func LowerToExternalChannel(value *Channel) uint64 {
+	return uint64(FfiConverterChannelINSTANCE.Lower(value))
+}
+
+type FfiDestroyerChannel struct{}
+
+func (_ FfiDestroyerChannel) Destroy(value *Channel) {
+	value.Destroy()
 }
 
 // This device's limits: a profile and the values chosen within its ranges.
@@ -1940,6 +2266,364 @@ func (_ FfiDestroyerFinished) Destroy(value Finished) {
 	value.Destroy()
 }
 
+// What `Channel.open` returns.
+type OpenedFrame struct {
+	// What it carries.
+	Kind FrameKind
+	// The topic epoch the sender wrote.
+	Epoch uint32
+	// Its counter in the sender's ratchet.
+	Counter uint64
+	// The body, without padding. Not zeroized once it crosses.
+	Body []byte
+}
+
+func (r *OpenedFrame) Destroy() {
+	FfiDestroyerFrameKind{}.Destroy(r.Kind)
+	FfiDestroyerUint32{}.Destroy(r.Epoch)
+	FfiDestroyerUint64{}.Destroy(r.Counter)
+	FfiDestroyerBytes{}.Destroy(r.Body)
+}
+
+type FfiConverterOpenedFrame struct{}
+
+var FfiConverterOpenedFrameINSTANCE = FfiConverterOpenedFrame{}
+
+func (c FfiConverterOpenedFrame) Lift(rb RustBufferI) OpenedFrame {
+	return LiftFromRustBuffer[OpenedFrame](c, rb)
+}
+
+func (c FfiConverterOpenedFrame) Read(reader io.Reader) OpenedFrame {
+	return OpenedFrame{
+		FfiConverterFrameKindINSTANCE.Read(reader),
+		FfiConverterUint32INSTANCE.Read(reader),
+		FfiConverterUint64INSTANCE.Read(reader),
+		FfiConverterBytesINSTANCE.Read(reader),
+	}
+}
+
+func (c FfiConverterOpenedFrame) Lower(value OpenedFrame) C.RustBuffer {
+	return LowerIntoRustBuffer[OpenedFrame](c, value)
+}
+
+func (c FfiConverterOpenedFrame) LowerExternal(value OpenedFrame) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[OpenedFrame](c, value))
+}
+
+func (c FfiConverterOpenedFrame) Write(writer io.Writer, value OpenedFrame) {
+	FfiConverterFrameKindINSTANCE.Write(writer, value.Kind)
+	FfiConverterUint32INSTANCE.Write(writer, value.Epoch)
+	FfiConverterUint64INSTANCE.Write(writer, value.Counter)
+	FfiConverterBytesINSTANCE.Write(writer, value.Body)
+}
+
+type FfiDestroyerOpenedFrame struct{}
+
+func (_ FfiDestroyerOpenedFrame) Destroy(value OpenedFrame) {
+	value.Destroy()
+}
+
+// Why a channel step failed. A frame that does not authenticate only says `Rejected`.
+type ChannelError struct {
+	err error
+}
+
+// Convenience method to turn *ChannelError into error
+// Avoiding treating nil pointer as non nil error interface
+func (err *ChannelError) AsError() error {
+	if err == nil {
+		return nil
+	} else {
+		return err
+	}
+}
+
+func (err ChannelError) Error() string {
+	return fmt.Sprintf("ChannelError: %s", err.err.Error())
+}
+
+func (err ChannelError) Unwrap() error {
+	return err.err
+}
+
+// Err* are used for checking error type with `errors.Is`
+var ErrChannelErrorRejected = fmt.Errorf("ChannelErrorRejected")
+var ErrChannelErrorReplay = fmt.Errorf("ChannelErrorReplay")
+var ErrChannelErrorTooFarAhead = fmt.Errorf("ChannelErrorTooFarAhead")
+var ErrChannelErrorTooLarge = fmt.Errorf("ChannelErrorTooLarge")
+var ErrChannelErrorExhausted = fmt.Errorf("ChannelErrorExhausted")
+var ErrChannelErrorBadState = fmt.Errorf("ChannelErrorBadState")
+var ErrChannelErrorRng = fmt.Errorf("ChannelErrorRng")
+
+// Variant structs
+// Malformed frame, wrong size or version, or a tag that does not verify.
+type ChannelErrorRejected struct {
+}
+
+// Malformed frame, wrong size or version, or a tag that does not verify.
+func NewChannelErrorRejected() *ChannelError {
+	return &ChannelError{err: &ChannelErrorRejected{}}
+}
+
+func (e ChannelErrorRejected) destroy() {
+}
+
+func (err ChannelErrorRejected) Error() string {
+	return fmt.Sprint("Rejected")
+}
+
+func (self ChannelErrorRejected) Is(target error) bool {
+	return target == ErrChannelErrorRejected
+}
+
+// A counter this side already opened, or whose key expired.
+type ChannelErrorReplay struct {
+}
+
+// A counter this side already opened, or whose key expired.
+func NewChannelErrorReplay() *ChannelError {
+	return &ChannelError{err: &ChannelErrorReplay{}}
+}
+
+func (e ChannelErrorReplay) destroy() {
+}
+
+func (err ChannelErrorReplay) Error() string {
+	return fmt.Sprint("Replay")
+}
+
+func (self ChannelErrorReplay) Is(target error) bool {
+	return target == ErrChannelErrorReplay
+}
+
+// A counter too far ahead of the next expected one.
+type ChannelErrorTooFarAhead struct {
+}
+
+// A counter too far ahead of the next expected one.
+func NewChannelErrorTooFarAhead() *ChannelError {
+	return &ChannelError{err: &ChannelErrorTooFarAhead{}}
+}
+
+func (e ChannelErrorTooFarAhead) destroy() {
+}
+
+func (err ChannelErrorTooFarAhead) Error() string {
+	return fmt.Sprint("TooFarAhead")
+}
+
+func (self ChannelErrorTooFarAhead) Is(target error) bool {
+	return target == ErrChannelErrorTooFarAhead
+}
+
+// A body longer than `channel_max_body()`.
+type ChannelErrorTooLarge struct {
+}
+
+// A body longer than `channel_max_body()`.
+func NewChannelErrorTooLarge() *ChannelError {
+	return &ChannelError{err: &ChannelErrorTooLarge{}}
+}
+
+func (e ChannelErrorTooLarge) destroy() {
+}
+
+func (err ChannelErrorTooLarge) Error() string {
+	return fmt.Sprint("TooLarge")
+}
+
+func (self ChannelErrorTooLarge) Is(target error) bool {
+	return target == ErrChannelErrorTooLarge
+}
+
+// The send counter ran out.
+type ChannelErrorExhausted struct {
+}
+
+// The send counter ran out.
+func NewChannelErrorExhausted() *ChannelError {
+	return &ChannelError{err: &ChannelErrorExhausted{}}
+}
+
+func (e ChannelErrorExhausted) destroy() {
+}
+
+func (err ChannelErrorExhausted) Error() string {
+	return fmt.Sprint("Exhausted")
+}
+
+func (self ChannelErrorExhausted) Is(target error) bool {
+	return target == ErrChannelErrorExhausted
+}
+
+// Sealed state that does not open with this key and peer id, or a bad key or peer id.
+type ChannelErrorBadState struct {
+}
+
+// Sealed state that does not open with this key and peer id, or a bad key or peer id.
+func NewChannelErrorBadState() *ChannelError {
+	return &ChannelError{err: &ChannelErrorBadState{}}
+}
+
+func (e ChannelErrorBadState) destroy() {
+}
+
+func (err ChannelErrorBadState) Error() string {
+	return fmt.Sprint("BadState")
+}
+
+func (self ChannelErrorBadState) Is(target error) bool {
+	return target == ErrChannelErrorBadState
+}
+
+// The OS random generator failed.
+type ChannelErrorRng struct {
+}
+
+// The OS random generator failed.
+func NewChannelErrorRng() *ChannelError {
+	return &ChannelError{err: &ChannelErrorRng{}}
+}
+
+func (e ChannelErrorRng) destroy() {
+}
+
+func (err ChannelErrorRng) Error() string {
+	return fmt.Sprint("Rng")
+}
+
+func (self ChannelErrorRng) Is(target error) bool {
+	return target == ErrChannelErrorRng
+}
+
+type FfiConverterChannelError struct{}
+
+var FfiConverterChannelErrorINSTANCE = FfiConverterChannelError{}
+
+func (c FfiConverterChannelError) Lift(eb RustBufferI) *ChannelError {
+	return LiftFromRustBuffer[*ChannelError](c, eb)
+}
+
+func (c FfiConverterChannelError) Lower(value *ChannelError) C.RustBuffer {
+	return LowerIntoRustBuffer[*ChannelError](c, value)
+}
+
+func (c FfiConverterChannelError) LowerExternal(value *ChannelError) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[*ChannelError](c, value))
+}
+
+func (c FfiConverterChannelError) Read(reader io.Reader) *ChannelError {
+	errorID := readUint32(reader)
+
+	switch errorID {
+	case 1:
+		return &ChannelError{&ChannelErrorRejected{}}
+	case 2:
+		return &ChannelError{&ChannelErrorReplay{}}
+	case 3:
+		return &ChannelError{&ChannelErrorTooFarAhead{}}
+	case 4:
+		return &ChannelError{&ChannelErrorTooLarge{}}
+	case 5:
+		return &ChannelError{&ChannelErrorExhausted{}}
+	case 6:
+		return &ChannelError{&ChannelErrorBadState{}}
+	case 7:
+		return &ChannelError{&ChannelErrorRng{}}
+	default:
+		panic(fmt.Sprintf("Unknown error code %d in FfiConverterChannelError.Read()", errorID))
+	}
+}
+
+func (c FfiConverterChannelError) Write(writer io.Writer, value *ChannelError) {
+	switch variantValue := value.err.(type) {
+	case *ChannelErrorRejected:
+		writeInt32(writer, 1)
+	case *ChannelErrorReplay:
+		writeInt32(writer, 2)
+	case *ChannelErrorTooFarAhead:
+		writeInt32(writer, 3)
+	case *ChannelErrorTooLarge:
+		writeInt32(writer, 4)
+	case *ChannelErrorExhausted:
+		writeInt32(writer, 5)
+	case *ChannelErrorBadState:
+		writeInt32(writer, 6)
+	case *ChannelErrorRng:
+		writeInt32(writer, 7)
+	default:
+		_ = variantValue
+		panic(fmt.Sprintf("invalid error value `%v` in FfiConverterChannelError.Write", value))
+	}
+}
+
+type FfiDestroyerChannelError struct{}
+
+func (_ FfiDestroyerChannelError) Destroy(value *ChannelError) {
+	switch variantValue := value.err.(type) {
+	case ChannelErrorRejected:
+		variantValue.destroy()
+	case ChannelErrorReplay:
+		variantValue.destroy()
+	case ChannelErrorTooFarAhead:
+		variantValue.destroy()
+	case ChannelErrorTooLarge:
+		variantValue.destroy()
+	case ChannelErrorExhausted:
+		variantValue.destroy()
+	case ChannelErrorBadState:
+		variantValue.destroy()
+	case ChannelErrorRng:
+		variantValue.destroy()
+	default:
+		_ = variantValue
+		panic(fmt.Sprintf("invalid error value `%v` in FfiDestroyerChannelError.Destroy", value))
+	}
+}
+
+// What a channel frame carries.
+type FrameKind uint
+
+const (
+	// Application data.
+	FrameKindData FrameKind = 1
+	// Acknowledgement.
+	FrameKindAck FrameKind = 2
+	// Hybrid re-key (v1.1).
+	FrameKindRekey FrameKind = 3
+	// The sender revoked the pairing.
+	FrameKindClose FrameKind = 4
+)
+
+type FfiConverterFrameKind struct{}
+
+var FfiConverterFrameKindINSTANCE = FfiConverterFrameKind{}
+
+func (c FfiConverterFrameKind) Lift(rb RustBufferI) FrameKind {
+	return LiftFromRustBuffer[FrameKind](c, rb)
+}
+
+func (c FfiConverterFrameKind) Lower(value FrameKind) C.RustBuffer {
+	return LowerIntoRustBuffer[FrameKind](c, value)
+}
+
+func (c FfiConverterFrameKind) LowerExternal(value FrameKind) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[FrameKind](c, value))
+}
+func (FfiConverterFrameKind) Read(reader io.Reader) FrameKind {
+	id := readInt32(reader)
+	return FrameKind(id)
+}
+
+func (FfiConverterFrameKind) Write(writer io.Writer, value FrameKind) {
+	writeInt32(writer, int32(value))
+}
+
+type FfiDestroyerFrameKind struct{}
+
+func (_ FfiDestroyerFrameKind) Destroy(value FrameKind) {
+}
+
 // Why a step failed. On purpose, a rejected message does not say which check it failed.
 type NachaloError struct {
 	err error
@@ -2292,6 +2976,20 @@ func AppointmentWordsA() uint32 {
 func AppointmentWordsB() uint32 {
 	return FfiConverterUint32INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint32_t {
 		return C.uniffi_nachalo_uniffi_fn_func_appointment_words_b(_uniffiStatus)
+	}))
+}
+
+// The UTC day of a Unix time, which names the relay topics.
+func ChannelEpoch(nowUnix uint64) uint32 {
+	return FfiConverterUint32INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint32_t {
+		return C.uniffi_nachalo_uniffi_fn_func_channel_epoch(FfiConverterUint64INSTANCE.Lower(nowUnix), _uniffiStatus)
+	}))
+}
+
+// Largest body one frame carries.
+func ChannelMaxBody() uint32 {
+	return FfiConverterUint32INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint32_t {
+		return C.uniffi_nachalo_uniffi_fn_func_channel_max_body(_uniffiStatus)
 	}))
 }
 
