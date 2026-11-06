@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
-description = "Kotlin, Swift and Go bindings for Nachalo, through UniFFI."
+description = "Kotlin, Swift, Go and Python bindings for Nachalo and Nachalo Channel, through UniFFI."
 repository = "https://github.com/RamsisDev/Nachalo"
 publish = false
 
@@ -19,6 +19,7 @@ path = "uniffi-bindgen.rs"
 
 [dependencies]
 nachalo = { path = "../.." }
+nachalo-channel = { path = "../../channel" }
 # Exactly the UniFFI uniffi-bindgen-go v0.7.1+v0.31.0 is built on, so one library serves
 # Kotlin, Swift and Go.
 uniffi = { version = "=0.31.0", features = ["cli"] }

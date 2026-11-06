@@ -1,0 +1,29 @@
+[package]
+name = "nachalo-channel"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "Nachalo Channel v1: the encrypted channel two peers run after a Nachalo handshake. Symmetric ratchet, fixed-size frames, rotating relay topics, replay protection and sealed state."
+repository = "https://github.com/RamsisDev/Nachalo"
+keywords = ["ratchet", "chacha20poly1305", "channel", "nachalo"]
+categories = ["cryptography"]
+include = ["src/**", "LICENSE-*", "README.md"]
+
+[dependencies]
+chacha20poly1305 = "0.11.0"
+getrandom = "0.4.3"
+hkdf = "0.13.0"
+sha2 = "0.11.1"
+zeroize = "1.9.1"
+
+[dev-dependencies]
+hex = "0.4.3"
+proptest = "1.12.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

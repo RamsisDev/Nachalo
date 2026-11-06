@@ -1,2 +1,6 @@
 /target
 /.claude/
+/bindings/python/.venv/
+/bindings/python/dist/
+__pycache__/
+.pytest_cache/

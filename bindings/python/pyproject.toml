@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "nachalo"
+version = "0.1.0"
+description = "Python bindings for Nachalo (CPace + X25519 + ML-KEM-768 first contact from a few words) and Nachalo Channel v1."
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+requires-python = ">=3.9"
+authors = [{ name = "Ramsis Peñaloza" }]
+keywords = ["pake", "cpace", "ml-kem", "post-quantum", "handshake"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security :: Cryptography",
+]
+
+[project.urls]
+Repository = "https://github.com/RamsisDev/Nachalo"
+Specification = "https://github.com/RamsisDev/Nachalo/blob/main/spec/nachalo.md"
+
+[tool.maturin]
+manifest-path = "../uniffi/Cargo.toml"
+bindings = "uniffi"
+module-name = "nachalo"
+profile = "release"
+strip = true

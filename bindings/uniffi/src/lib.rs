@@ -1,5 +1,6 @@
-//! Kotlin, Swift and Go bindings for [Nachalo](https://github.com/RamsisDev/Nachalo), through
-//! UniFFI. Each item converts types and calls the `nachalo` crate, which documents the behavior.
+//! Kotlin, Swift, Go and Python bindings for [Nachalo](https://github.com/RamsisDev/Nachalo)
+//! and Nachalo Channel, through UniFFI. Each item converts types and calls the `nachalo` or
+//! `nachalo-channel` crate, which documents the behavior.
 //!
 //! Secrets that cross into the foreign language (words, tokens, payloads, keys, exports) become
 //! its own strings and byte arrays, which Rust's zeroizing does not reach: wipe them there if the
@@ -459,6 +460,212 @@ impl Established {
     }
 }
 
+/// Why a channel step failed. A frame that does not authenticate only says `Rejected`.
+#[derive(Debug, PartialEq, Eq, uniffi::Error)]
+pub enum ChannelError {
+    /// Malformed frame, wrong size or version, or a tag that does not verify.
+    Rejected,
+    /// A counter this side already opened, or whose key expired.
+    Replay,
+    /// A counter too far ahead of the next expected one.
+    TooFarAhead,
+    /// A body longer than `channel_max_body()`.
+    TooLarge,
+    /// The send counter ran out.
+    Exhausted,
+    /// Sealed state that does not open with this key and peer id, or a bad key or peer id.
+    BadState,
+    /// The OS random generator failed.
+    Rng,
+}
+
+impl std::fmt::Display for ChannelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, f)
+    }
+}
+
+impl std::error::Error for ChannelError {}
+
+impl From<nachalo_channel::Error> for ChannelError {
+    fn from(error: nachalo_channel::Error) -> Self {
+        use nachalo_channel::Error as E;
+        match error {
+            E::Rejected => Self::Rejected,
+            E::Replay => Self::Replay,
+            E::TooFarAhead => Self::TooFarAhead,
+            E::TooLarge => Self::TooLarge,
+            E::Exhausted => Self::Exhausted,
+            E::BadState => Self::BadState,
+            E::Rng => Self::Rng,
+        }
+    }
+}
+
+/// What a channel frame carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FrameKind {
+    /// Application data.
+    Data,
+    /// Acknowledgement.
+    Ack,
+    /// Hybrid re-key (v1.1).
+    Rekey,
+    /// The sender revoked the pairing.
+    Close,
+}
+
+impl From<FrameKind> for nachalo_channel::Kind {
+    fn from(kind: FrameKind) -> Self {
+        match kind {
+            FrameKind::Data => Self::Data,
+            FrameKind::Ack => Self::Ack,
+            FrameKind::Rekey => Self::Rekey,
+            FrameKind::Close => Self::Close,
+        }
+    }
+}
+
+impl From<nachalo_channel::Kind> for FrameKind {
+    fn from(kind: nachalo_channel::Kind) -> Self {
+        match kind {
+            nachalo_channel::Kind::Data => Self::Data,
+            nachalo_channel::Kind::Ack => Self::Ack,
+            nachalo_channel::Kind::Rekey => Self::Rekey,
+            nachalo_channel::Kind::Close => Self::Close,
+        }
+    }
+}
+
+/// What `Channel.open` returns.
+#[derive(uniffi::Record)]
+pub struct OpenedFrame {
+    /// What it carries.
+    pub kind: FrameKind,
+    /// The topic epoch the sender wrote.
+    pub epoch: u32,
+    /// Its counter in the sender's ratchet.
+    pub counter: u64,
+    /// The body, without padding. Not zeroized once it crosses.
+    pub body: Vec<u8>,
+}
+
+/// Largest body one frame carries.
+#[uniffi::export]
+pub fn channel_max_body() -> u32 {
+    nachalo_channel::MAX_BODY as u32
+}
+
+/// The UTC day of a Unix time, which names the relay topics.
+#[uniffi::export]
+pub fn channel_epoch(now_unix: u64) -> u32 {
+    nachalo_channel::epoch_of(now_unix)
+}
+
+/// One side of a Nachalo Channel v1 (`spec/channel.md`). Its keys never leave Rust: they come
+/// from the handshake inside `from_established` and leave only sealed by `seal_state`.
+#[derive(uniffi::Object)]
+pub struct Channel(Mutex<nachalo_channel::Channel>);
+
+fn store_key(bytes: &[u8]) -> std::result::Result<nachalo_channel::Key, ChannelError> {
+    bytes.try_into().map_err(|_| ChannelError::BadState)
+}
+
+#[uniffi::export]
+impl Channel {
+    /// A fresh channel from a confirmed handshake, bound to the public `peer_id`.
+    #[uniffi::constructor]
+    pub fn from_established(
+        established: Arc<Established>,
+        peer_id: Vec<u8>,
+    ) -> std::result::Result<Self, ChannelError> {
+        let secrets = nachalo_channel::Secrets::derive(|label| established.0.export(label));
+        let role = match established.0.role() {
+            nachalo::Role::Initiator => nachalo_channel::Role::Initiator,
+            nachalo::Role::Responder => nachalo_channel::Role::Responder,
+        };
+        Ok(Channel(Mutex::new(nachalo_channel::Channel::new(
+            role, &secrets, &peer_id,
+        )?)))
+    }
+
+    /// Restores a channel from `seal_state`, for this 32-byte `store_key` and `peer_id`.
+    #[uniffi::constructor]
+    pub fn open_state(
+        blob: Vec<u8>,
+        store_key: Vec<u8>,
+        peer_id: Vec<u8>,
+    ) -> std::result::Result<Self, ChannelError> {
+        Ok(Channel(Mutex::new(nachalo_channel::Channel::open_state(
+            &blob,
+            &crate::store_key(&store_key)?,
+            &peer_id,
+        )?)))
+    }
+
+    /// Which side this device played.
+    pub fn role(&self) -> Role {
+        match self.0.lock().unwrap().role() {
+            nachalo_channel::Role::Initiator => Role::Initiator,
+            nachalo_channel::Role::Responder => Role::Responder,
+        }
+    }
+
+    /// Frames sealed so far.
+    pub fn sent(&self) -> u64 {
+        self.0.lock().unwrap().sent()
+    }
+
+    /// The next counter expected from the peer.
+    pub fn received(&self) -> u64 {
+        self.0.lock().unwrap().received()
+    }
+
+    /// The topic this side publishes to on UTC day `epoch`.
+    pub fn send_topic(&self, epoch: u32) -> String {
+        self.0.lock().unwrap().send_topic(epoch)
+    }
+
+    /// The topic this side reads on UTC day `epoch`.
+    pub fn recv_topic(&self, epoch: u32) -> String {
+        self.0.lock().unwrap().recv_topic(epoch)
+    }
+
+    /// Seals `body` into one fixed-size frame.
+    pub fn seal(
+        &self,
+        kind: FrameKind,
+        body: Vec<u8>,
+        now_unix: u64,
+    ) -> std::result::Result<Vec<u8>, ChannelError> {
+        Ok(self.0.lock().unwrap().seal(kind.into(), &body, now_unix)?)
+    }
+
+    /// Opens one frame from the peer; a frame that fails changes nothing.
+    pub fn open(
+        &self,
+        frame: Vec<u8>,
+        now_unix: u64,
+    ) -> std::result::Result<OpenedFrame, ChannelError> {
+        let opened = self.0.lock().unwrap().open(&frame, now_unix)?;
+        Ok(OpenedFrame {
+            kind: opened.kind.into(),
+            epoch: opened.epoch,
+            counter: opened.counter,
+            body: opened.body.to_vec(),
+        })
+    }
+
+    /// The whole state, sealed under the 32-byte `store_key`.
+    pub fn seal_state(&self, store_key: Vec<u8>) -> std::result::Result<Vec<u8>, ChannelError> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .seal_state(&crate::store_key(&store_key)?)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +755,55 @@ mod tests {
             (b"B".to_vec(), b"A".to_vec())
         );
         assert_eq!(a.role(), Role::Initiator);
+    }
+
+    #[test]
+    fn a_channel_runs_through_the_bindings() {
+        let invitation = live(WORDS);
+        let a = Initiator::start(invitation, b"A".to_vec(), CLOCK).unwrap();
+        let answer = Listener::new(live(WORDS))
+            .respond(a.msg1(), b"B".to_vec(), CLOCK)
+            .unwrap();
+        let finished = a.finish(answer.msg2, CLOCK).unwrap();
+        let b = answer.responder.finish(finished.msg3, CLOCK).unwrap();
+        let a = finished
+            .unconfirmed
+            .verify(b.safety_words().unwrap(), CLOCK)
+            .unwrap();
+        let b = b.confirm(CLOCK).unwrap();
+
+        let peer = b"PEER".to_vec();
+        let ca = Channel::from_established(a, peer.clone()).unwrap();
+        let cb = Channel::from_established(b, peer.clone()).unwrap();
+        let e = channel_epoch(CLOCK.now_unix);
+        assert_eq!(ca.send_topic(e), cb.recv_topic(e));
+        let frame = ca
+            .seal(FrameKind::Data, b"hola".to_vec(), CLOCK.now_unix)
+            .unwrap();
+        assert_eq!(frame.len(), 512);
+        let opened = cb.open(frame.clone(), CLOCK.now_unix).unwrap();
+        assert_eq!(
+            (opened.kind, opened.body),
+            (FrameKind::Data, b"hola".to_vec())
+        );
+        assert_eq!(
+            cb.open(frame, CLOCK.now_unix).err(),
+            Some(ChannelError::Replay)
+        );
+
+        let key = vec![5u8; 32];
+        let blob = cb.seal_state(key.clone()).unwrap();
+        let restored = Channel::open_state(blob.clone(), key, peer.clone()).unwrap();
+        assert_eq!((restored.role(), restored.received()), (Role::Responder, 1));
+        assert_eq!(
+            Channel::open_state(blob, vec![1; 31], peer).err(),
+            Some(ChannelError::BadState)
+        );
+        assert_eq!(
+            ca.seal(FrameKind::Data, vec![0; channel_max_body() as usize + 1], 0)
+                .err(),
+            Some(ChannelError::TooLarge)
+        );
     }
 
     #[test]

@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 nachalo = { path = ".." }
+nachalo-channel = { path = "../channel" }
+zeroize = "1.9.1"
 
 # Its own workspace, so the crate's builds and `cargo publish` never see it.
 [workspace]
@@ -46,6 +48,13 @@ bench = false
 [[bin]]
 name = "state"
 path = "fuzz_targets/state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "channel_open"
+path = "fuzz_targets/channel_open.rs"
 test = false
 doc = false
 bench = false

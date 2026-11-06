@@ -961,10 +961,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nachalo-channel"
+version = "0.1.0"
+dependencies = [
+ "chacha20poly1305",
+ "getrandom",
+ "hex",
+ "hkdf",
+ "proptest",
+ "sha2",
+ "zeroize",
+]
+
+[[package]]
 name = "nachalo-uniffi"
 version = "0.1.0"
 dependencies = [
  "nachalo",
+ "nachalo-channel",
  "uniffi",
 ]
 

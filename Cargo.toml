@@ -1,5 +1,8 @@
 [workspace]
-members = ["bindings/uniffi", "bindings/wasm"]
+members = ["bindings/uniffi", "bindings/wasm", "channel"]
+# maturin (bindings/python) runs `cargo run --bin uniffi-bindgen` from this directory, which only
+# finds the binary when its crate is a default member.
+default-members = [".", "bindings/uniffi", "channel"]
 
 [package]
 name = "nachalo"
