@@ -26,4 +26,5 @@ manifest-path = "../uniffi/Cargo.toml"
 bindings = "uniffi"
 module-name = "nachalo"
 profile = "release"
-strip = true
+# No strip: on Linux it removes the symbol table uniffi-bindgen reads the bindings from,
+# and the wheel ships without nachalo.py.
