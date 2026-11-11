@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "nachalo"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python bindings for Nachalo (CPace + X25519 + ML-KEM-768 first contact from a few words) and Nachalo Channel v1."
 readme = "README.md"
 license = "MIT OR Apache-2.0"
