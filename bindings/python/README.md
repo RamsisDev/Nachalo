@@ -12,7 +12,7 @@ import time
 import nachalo
 
 def clock():
-    return nachalo.Clock(now=int(time.clock_gettime(time.CLOCK_MONOTONIC)), now_unix=int(time.time()))
+    return nachalo.Clock(now=int(time.monotonic()), now_unix=int(time.time()))
 
 config = nachalo.Config(nachalo.Profile.INTERACTIVE)
 words = nachalo.words(6)                                  # A gives these to B out of band
